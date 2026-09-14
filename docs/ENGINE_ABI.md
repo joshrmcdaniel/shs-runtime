@@ -118,7 +118,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 91 (`5b`) | bool(a1) | Loading overlay gates VM execution until active time >3000 ms. Zero argument completes its frame immediately; nonzero retains it until `FUN_0009ea70` clears the overlay. [Contract](STORY_SERVICES.md#loading-overlay-service-91). | R=0; UI cells unchanged | P |
 | 92 (`5c`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 93 (`5d`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
-| 94 (`5e`) | 22 words; six weighted play tables and six instruction references | Football: nine changing targets, drives, halves and sudden death. [Frame and rules](MINIGAMES.md#4-service-94-football). | home minus away; saves both scores | P |
+| 94 (`5e`) | 22 words; six weighted play tables and six instruction references | Football: nine changing targets, drives, halves and sudden death. [Frame and rules](MINIGAMES.md#4-service-94-football); [presentation](FOOTBALL_UI.md). | home minus away; saves both scores | P |
 | 95 (`5f`) | a1 selector | Last football home score if a1==1, otherwise away score; scene `+0x1c0c/+0x1c10`. Python rejects uninitialized score reads. | word | C |
 | 96 (`60`) | 20 words; ten-word problems, seventeen-word tutorials, two-word symbols | Word/picture grids, timers, tutorial branches, path scoring. [Frame and rules](MINIGAMES.md#5-service-96-word-and-picture-grids). | score >= target as 0/1; UI cells unchanged | P |
 | 97 (`61`) | bool(a1), a2 | Scene helper `FUN_0007b8d4`; effect unresolved. | 0 | X |

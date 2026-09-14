@@ -22,6 +22,10 @@ are listed under Unreleased.
   lettering, portrait-relative placement, rising letters and fade. Corrected
   their lifetime and dismissal on dialogue taps. The fix applies across
   episodes, and existing saves retain their remaining notice time.
+- Restored football's original help panels, play legend, fonts, team/score HUD,
+  four-step countdown, target motion and selection effects. Added smooth field
+  movement and native localized result sequences with corrected feedback timing.
+  Save version 8 preserves football animation state and reads earlier saves.
 
 ## v0.1.0
 

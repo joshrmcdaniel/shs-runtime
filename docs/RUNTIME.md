@@ -253,14 +253,14 @@ IDs take priority, including its scripts in the 25000 range. Playback starts at
 last scheduled script. Registers and complete stack backing survive that load,
 while data and PC/SP/FP reset according to the core VM contract.
 
-## Runtime save schema, version 7
+## Runtime save schema, version 8
 
 This is a new format for the reimplementation. No pickle, object deserialization,
 or original executable code is used. JSON fields are:
 
 | Field | Contract |
 | --- | --- |
-| `format`, `version` | `"shs-runtime-save"`, `7` |
+| `format`, `version` | `"shs-runtime-save"`, `8` |
 | `content` | `profile`, `apk_sha256`, `episode_sha256`; must exactly match loaded content |
 | `scene` | Unsigned current script resource ID |
 | `script_sha256` | Hash of the losslessly encoded current program |
@@ -355,6 +355,13 @@ atlas fonts and instruction panel geometry without mutating the VM or game.
 Earlier grid saves keep their exact board, score, selection and random state;
 missing decorative history starts at zero/null. See
 [GRID_UI.md](GRID_UI.md#saved-presentation-and-verification) for the typed schema.
+
+Version 8 adds football's `visual_ms`, `camera_position`, `hud_position`,
+`message_ids`, `message_values`, `message_hold_ms` and `effects`. These retain
+the moving field, localized message sequence and selected-play animation.
+Older football saves preserve recorded text, timers, scores, VM and random
+state; missing camera history starts at the saved field position and outgoing
+effects start empty. See [FOOTBALL_UI.md](FOOTBALL_UI.md#saved-presentation-and-verification).
 
 A save retained at unsupported service 39 now completes the recovered panel
 close through its validated VM frame and follows the saved script queue to

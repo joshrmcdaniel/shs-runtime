@@ -63,6 +63,15 @@ uv run --locked --extra desktop shs
 3. Select an episode in Play/Resume. Imported episodes and progress persist
    when you close the app.
 
+> Store the episodes within a folder
+>
+> Example:
+>
+> Episodes/
+>     Episode1.exp
+>     Episode2.exp
+>     ...
+
 If your episode folder includes the original `shs_options.sav`, its category
 catalog supplies the original season/story groups. It can also be added
 separately. Without that optional file, unknown groups use numeric pack names.

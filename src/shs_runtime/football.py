@@ -15,6 +15,8 @@ from .vm import signed16
 PLAY_FRAMES = {-2: -57, -1: -51, -3: -41, -4: -59, -5: -45, -6: -42,
                1: -47, 2: -53, 3: -41, 4: -59, 5: -45, 6: -54, 7: -48}
 TARGET_CENTERS = tuple((x, y) for y in (220, 300, 380) for x in (60, 160, 260))
+SELECTED_FRAMES = {-59: -60, -57: -58, -54: -55, -53: -56, -51: -52,
+                   -48: -49, -47: -50, -45: -46, -42: -44, -41: -43}
 
 
 @dataclass
@@ -23,6 +25,16 @@ class Play:
     yards: int
     variation: int
     weight: int
+
+
+@dataclass
+class FootballEffect:
+    frame: int
+    x: int
+    y: int
+    scale: float
+    selected: bool
+    remaining_ms: int
 
 
 @dataclass
@@ -101,6 +113,19 @@ class Football:
     kick_result: int = 0
     sound_ids: list[int] = field(default_factory=list)
     sound_serial: int = 0
+    visual_ms: int = 0
+    camera_position: float | None = None
+    hud_position: float | None = None
+    message_ids: list[int] = field(default_factory=list)
+    message_values: list[int] = field(default_factory=list)
+    message_hold_ms: int = 800
+    effects: list[FootballEffect] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.camera_position is None:
+            self.camera_position = float(self.position)
+        if self.hud_position is None:
+            self.hud_position = float(self.position)
 
     @property
     def result(self):
@@ -121,10 +146,15 @@ class Football:
     def sound(self, *assets):
         self.sound_ids, self.sound_serial = list(assets), self.sound_serial + 1
 
-    def announce(self, text, phase, *, lines=2):
+    def announce(self, text, phase, *, lines=2, messages=(), hold=800):
         self.message = text
+        self.message_ids = [item[0] for item in messages]
+        self.message_values = [item[1] for item in messages]
+        self.message_hold_ms = hold
+        if messages:
+            lines = len(messages)
         self.message_lines, self.message_phase, self.message_ms = lines, 0, 800
-        self.enter(phase)
+        self.enter(phase, 1000 if phase in (5, 6) else 0)
 
     def tick_message(self, dt):
         # 000b4db4: three possible messages, each with explicit in/out stages.
@@ -134,8 +164,9 @@ class Football:
         if self.message_ms > 0:
             return
         phase = self.message_phase
-        transitions = {0: (1, 300), 1: (2, 800), 3: (4, 100), 4: (6, 300),
-                       6: (5, 800), 7: (8, 100), 8: (10, 300), 10: (9, 800), 11: (-1, 0)}
+        transitions = {0: (1, 300), 1: (2, self.message_hold_ms), 3: (4, 100), 4: (6, 300),
+                       6: (5, self.message_hold_ms), 7: (8, 100), 8: (10, 300),
+                       10: (9, self.message_hold_ms), 11: (-1, 0)}
         if phase == 2:
             next_phase = (3, 100) if self.message_lines > 1 else (11, 800)
         elif phase == 5:
@@ -145,6 +176,8 @@ class Football:
         else:
             next_phase = transitions[phase]
         self.message_phase, self.message_ms = next_phase
+        if self.phase == 11 and next_phase == 6:
+            self.sound(8101 if self.home > self.away else 8105)
 
     def eligible(self, play):
         if play.code == -4:
@@ -211,7 +244,20 @@ class Football:
         if self.phase != 3 or index is None or not self.targets[index].visible:
             return
         target = self.targets[index]
+        # 000bc2ec/000b2584: capture the current art before committing the
+        # play. These effects never choose an outcome or draw random values.
+        effects = []
+        for i, (item, (x, y)) in enumerate(zip(self.targets, TARGET_CENTERS)):
+            if item.visible:
+                frame = PLAY_FRAMES[item.code]
+                selected = i == index
+                if selected:
+                    frame = SELECTED_FRAMES[frame]
+                    y -= int(item.scale * 18)
+                effects.append(FootballEffect(frame, x, y, float(item.scale), selected,
+                                               1500 if selected else 1300))
         self.apply_play(target.code, target.yards, random)
+        self.effects = effects
 
     def apply_play(self, code, yards, random):
         """000b78c8: field movement, seven-point touchdowns, kicks, downs."""
@@ -221,7 +267,8 @@ class Football:
             self.score += 10 if self.defense else -50
             self.change_possession = True
             self.sound(8107, 8100 if self.defense else 8105)
-            self.announce('Turnover!', 5 if self.defense else 6)
+            self.announce('Turnover!', 5 if self.defense else 6,
+                          messages=((60, 1000), (55, 1000)), hold=0)
             return
         if abs(code) == 5:
             distance = 100 - self.position if self.defense else self.position
@@ -239,8 +286,11 @@ class Football:
             else:
                 self.sound(8104, 8105)
             self.change_possession = True
+            messages = [(46 if self.kick_result == 1 else 47, 1000)]
+            if self.remaining_ms > 0 and not self.sudden_death:
+                messages.append((-102, 1000))
             self.announce('Field goal!' if self.kick_result == 1 else 'Kick missed!', 13,
-                          lines=1 if self.remaining_ms <= 0 or self.sudden_death else 2)
+                          messages=messages)
             return
         if code == -6:
             yards = 0
@@ -258,26 +308,64 @@ class Football:
                 self.score += 70
             self.sound(8102, 8108 if self.defense else 8101)
             self.change_possession = True
+            messages = [(53 if self.defense else 48, 1000)]
+            if self.remaining_ms > 0 and not self.sudden_death:
+                messages.append((-102, 1000))
             self.announce('Touchdown!', 10 if self.defense else 9,
-                          lines=1 if self.remaining_ms <= 0 or self.sudden_death else 2)
+                          messages=messages)
             return
         self.down += 1
         if code == 3 or code == -3:
             self.sound(8103)
         else:
             self.sound(8102 if yards > 0 else 8104)
-        self.announce('Block!' if code == -6 else f'{abs(yards)} yards ' + ('gained' if yards > 0 else 'lost'), 4)
+        # 000b78c8: yardage, then the NEXT down (or possession change).
+        # Block is the localized zero-yard opponent message, not a new label.
+        if code == -6:
+            message, value = 61, 0
+        elif code in (6, 7) and not self.defense:
+            message, value = (63 if code == 6 else 62), yards - 5
+        else:
+            message = 54 if yards < 0 or (yards == 0 and self.defense) else 58
+            value = abs(yards)
+        messages = ((message, value), (55 if self.down == 4 else 49 + self.down, 1000))
+        if self.down == 4 and self.end_pending and self.half == 1:
+            # Native returns before configuring another banner at this boundary.
+            self.enter(4)
+        else:
+            self.announce(f'{abs(yards)} yards ' + ('gained' if yards > 0 else 'lost'),
+                          4, messages=messages, hold=0)
 
     def end_half(self):
         if self.half == 2 and self.home == self.away:
             self.sudden_death = True
         self.sound(8106)
+        result = 43 if self.home == self.away else 44 if self.home > self.away else 45
+        messages = (((42, 1000), (-102, 1000)) if self.half == 1 else
+                    ((57, 1000), (-102, 1000), (result, 1000)) if self.half == 2 else
+                    ((-102, 1000), (result, 1000)))
         self.announce('Halftime' if self.half == 1 else 'Sudden death' if self.home == self.away else 'Full time',
-                      11, lines=3 if self.half == 2 else 2)
+                      11, messages=messages)
+
+    def tick_presentation(self, dt):
+        """000b1c10 / 000c0310: independent field and scoreboard easing."""
+        self.visual_ms += dt
+        for effect in self.effects:
+            effect.remaining_ms = max(0, effect.remaining_ms - dt)
+        self.effects = [effect for effect in self.effects if effect.remaining_ms > 0]
+        self.camera_position += (self.position - self.camera_position) * .5 * min(dt / 100, 1.)
+        if abs(self.position - self.camera_position) < .02:
+            self.camera_position = float(self.position)
+        delta = self.position - self.hud_position
+        step = delta * .5 * (dt / 300)
+        self.hud_position += step
+        if delta * (self.position - self.hud_position) < 0 or abs(step) < .5:
+            self.hud_position = float(self.position)
 
     def tick(self, elapsed_ms, random):
         dt = min(250, elapsed_ms)
         self.phase_elapsed_ms += dt
+        self.tick_presentation(dt)
         self.tick_message(dt)
         active = self.phase in (2, 3)
         if self.phase == 2:
@@ -305,7 +393,8 @@ class Football:
             self.phase_ms -= dt
             if self.phase_ms <= 0:
                 self.enter(2)
-        elif self.phase == 4 and self.message_phase == -1:
+        elif (self.phase == 4 and self.message_phase == -1
+              and self.camera_position == self.position):
             if self.end_pending:
                 self.end_half()
             elif self.down == 4:
@@ -313,11 +402,12 @@ class Football:
                 self.enter(7, 2000)
             else:
                 self.enter(2)
-        elif self.phase in (5, 6, 7) and self.message_phase == -1:
-            self.phase_ms -= dt
-            if self.phase_ms <= 0:
+        elif self.phase in (5, 6, 7):
+            self.phase_ms = max(0, self.phase_ms - dt)
+            if self.phase_ms <= 0 and self.message_phase == -1:
                 self.help(switch=self.change_possession)
-        elif self.phase in (9, 10, 13) and self.message_phase == -1:
+        elif (self.phase in (9, 10, 13) and self.message_phase == -1
+              and (self.phase == 13 or self.camera_position == self.position)):
             if self.sudden_death:
                 self.end_half()
             else:
@@ -381,6 +471,21 @@ class Football:
                 or not -32768 <= self.away <= 32767 or self.remaining_ms < -1
                 or self.remaining_ms > max(self.first_ms, self.second_ms)):
             raise ValueError('Invalid saved football game')
+        if (self.visual_ms < 0 or self.camera_position is None or self.hud_position is None
+                or not 0 <= self.camera_position <= 100 or not 0 <= self.hud_position <= 100
+                or self.message_hold_ms not in (0, 800)
+                or len(self.message_ids) not in (0, self.message_lines)
+                or len(self.message_ids) != len(self.message_values)
+                or any(i not in (*range(42, 64), -100, -101, -102) for i in self.message_ids)):
+            raise ValueError('Invalid saved football presentation')
+        if len(self.effects) > 9:
+            raise ValueError('Too many football effects')
+        for effect in self.effects:
+            if (effect.frame not in (SELECTED_FRAMES.values() if effect.selected else PLAY_FRAMES.values())
+                    or effect.x not in (60, 160, 260) or not 202 <= effect.y <= 380
+                    or not 0 <= effect.scale <= 1
+                    or not 0 < effect.remaining_ms <= (1500 if effect.selected else 1300)):
+                raise ValueError('Invalid saved football effect')
         for t in self.targets:
             if (t.code not in PLAY_FRAMES or not 0 <= t.delay_ms < 1200
                     or t.hold_ms not in (800, 1300) or not 1 <= t.phase <= 8 or t.elapsed_ms < 0):

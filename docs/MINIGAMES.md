@@ -215,11 +215,13 @@ with no play clock, initially on offense. The first scoring result ends overtime
 After result presentation and exit the callback stores the match scores and
 resumes KiWi. Evidence: `000b78c8`, `000b618c`, `000c0310`.
 
-Feedback uses an 800 ms entrance, 300 ms text entrance, 800 ms hold; additional
-lines add 100/100/300/800 ms stages, followed by an 800 ms exit (`000b4db4`).
-The implementation models these timers and the final 960 ms exit, but currently
-combines the native multi-line feedback into one text banner. Camera movement
-and some feedback-dependent field animation remain simplified; see section 7.
+Feedback uses an 800 ms entrance, 300 ms shine and a hold of 0 ms for ordinary
+yards/turnovers or 800 ms for touchdowns, kicks and half results. Additional
+messages add 100/100/300/hold stages, followed by an 800 ms exit (`000b4db4`).
+The messages, localized team/score labels, camera interpolation, play animations,
+fonts, help panels and four-step countdown are implemented and specified in
+[FOOTBALL_UI.md](FOOTBALL_UI.md). The final 960 ms exit timer is modeled;
+its original overlay and the other remaining differences are listed below.
 
 ## 5. Service 96: word and picture grids
 
@@ -435,6 +437,11 @@ time and no reconstructed banner/outgoing faces, retaining the generated board,
 selection, score, random generator and VM state. Full field schemas and native
 evidence are in [GRID_UI.md](GRID_UI.md#saved-presentation-and-verification).
 
+Version **8** adds football's camera/HUD positions, decorative time, distinct
+localized message IDs/values and outgoing play effects. Older football saves
+retain their recorded feedback and game state; absent camera history starts at
+the saved field position. See [FOOTBALL_UI.md](FOOTBALL_UI.md#saved-presentation-and-verification).
+
 Service 88 queues a substituted notification for the next dialogue, with the
 original Pajama Hip S font, rising letters and length-dependent fade
 (`0009c814/0009c750`). This shared path handles post-game notifications and stat
@@ -450,8 +457,9 @@ malformed saves, actual user-supplied script frames, original atlas decoding,
 resized mouse coordinates and pause/focus gating. These are implementation and
 native-derived rule checks; no running-original frame trace has been compared.
 
-Remaining differences include football field-camera interpolation, several
-feedback/sparkle/sound stages and localized team/banner labels; grid tile side
+Remaining differences include football touchdown particles and their random
+draws, flying internal score deltas, parts of sound staging and the final exit
+overlay (see [FOOTBALL_UI.md](FOOTBALL_UI.md)); grid tile side
 faces, specular highlights, particle effects, ring pulses, flying score deltas,
 board-load timing during outgoing animation and some overlay boundaries. The grid currently builds
 the incoming board when phase 4 begins, whereas native may defer it until the

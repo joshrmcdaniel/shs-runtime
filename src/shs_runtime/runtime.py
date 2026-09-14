@@ -314,7 +314,7 @@ class Session:
         return self.advance()
 
     def snapshot(self) -> dict:
-        return dict(format='shs-runtime-save', version=7,
+        return dict(format='shs-runtime-save', version=8,
                     content=self.resources.identity, scene=self.scene,
                     script_sha256=digest(self.vm.program.to_bytes()),
                     vm=self.vm.snapshot(), engine=asdict(self.engine),
@@ -325,9 +325,17 @@ class Session:
     @classmethod
     def from_snapshot(cls, resources: EpisodeResources, state: dict):
         try:
-            if state['format'] != 'shs-runtime-save' or state['version'] not in (1, 2, 3, 4, 5, 6, 7):
+            if state['format'] != 'shs-runtime-save' or state['version'] not in (1, 2, 3, 4, 5, 6, 7, 8):
                 raise SaveError('Unsupported save format or version')
             legacy = state['version'] == 1
+            if state['version'] < 8 and state['engine'].get('football') is not None:
+                state = deepcopy(state)
+                football = state['engine']['football']
+                # Old saves lack both camera history and individual native
+                # messages. Keep their current text/timers until the next play.
+                football.update(visual_ms=0, camera_position=float(football['position']),
+                                hud_position=float(football['position']), message_ids=[],
+                                message_values=[], message_hold_ms=800, effects=[])
             if state['version'] < 7 and state['engine'].get('word_grid') is not None:
                 state = deepcopy(state)
                 # Older saves have no decorative clock or outgoing tile face.

@@ -1,13 +1,19 @@
-"""Football art and hit regions recovered from the service-94 panel."""
+"""Native service-94 art, fonts, panels, play targets and feedback."""
+from dataclasses import replace
 from functools import lru_cache
+from io import BytesIO
 import math
 
 import pygame
 
-from .atlas import SpriteAtlas
+from .atlas import AtlasFont, SpriteAtlas
 from .football import PLAY_FRAMES, TARGET_CENTERS
-from .fonts import TextStyle
-from .ui_assets import Rect
+from .football_layout import (FONT, HELP_STYLE, LABEL_STYLE, TITLE_STYLE, clamp,
+                              countdown_motion, feedback_motion, feedback_text,
+                              footer_id, heading_id, help_motion, legend_codes,
+                              target_position, team_name, yard_glyphs)
+from .menu import MenuStrings
+from .ui_assets import ImagePack, Raster
 
 
 class FootballRenderer:
@@ -24,31 +30,83 @@ class FootballRenderer:
         r = self.atlas().raster(index)
         return pygame.image.frombytes(r.pixels, (r.width, r.height), 'RGBA').convert_alpha()
 
-    def sprite(self, index, x, y, scale=1):
-        if scale <= 0:
+    @lru_cache(maxsize=10)
+    def image(self, asset):
+        data = self.resources.read_asset(asset)
+        if data.startswith((b'\x89PNG', b'\xff\xd8')):
+            return pygame.image.load(BytesIO(data)).convert_alpha()
+        raster = ImagePack.parse(data).images[0]
+        return pygame.image.frombytes(raster.pixels, (raster.width, raster.height), raster.mode).convert_alpha()
+
+    @lru_cache(maxsize=1)
+    def strings(self):
+        return MenuStrings.parse(self.resources.read_asset(13))
+
+    @lru_cache(maxsize=1)
+    def feedback_font(self):
+        # Unlike grid glyph sheets, 540 is a PNG; 541 uses the CS metrics.
+        image = self.image(540)
+        return AtlasFont.parse(self.resources.read_asset(541),
+                               Raster(*image.get_size(), pygame.image.tobytes(image, 'RGBA')))
+
+    @lru_cache(maxsize=128)
+    def feedback_image(self, text):
+        font, atlas = self.feedback_font(), self.image(540)
+        lines = font.wrap(text, 300)
+        width = max((font.width(line) for line in lines), default=0)
+        image = pygame.Surface((max(1, width), max(1, font.text_height(lines))), pygame.SRCALPHA)
+        for row, line in enumerate(lines):
+            x = (width - font.width(line)) // 2
+            for char in line:
+                glyph = font.glyph(char)
+                if glyph is not None and char != ' ':
+                    gx, gy, gw = glyph
+                    image.blit(atlas, (x, row * (font.height + font.line_gap)), (gx, gy, gw, font.height))
+                x += font.char_width(char) + font.tracking
+        return image
+
+    def blit(self, image, x, y, *, scale=1., scale_y=None, alpha=1., angle=0., center=False):
+        scale_y = scale if scale_y is None else scale_y
+        if scale <= 0 or scale_y <= 0 or alpha <= 0:
             return
+        if scale != 1 or scale_y != 1:
+            image = pygame.transform.smoothscale(image, (max(1, round(image.get_width() * scale)),
+                                                          max(1, round(image.get_height() * scale_y))))
+        if angle:
+            image = pygame.transform.rotate(image, -angle)
+        if alpha < 1:
+            image = image.copy()
+            image.set_alpha(round(255 * clamp(alpha)))
+        self.canvas.blit(image, image.get_rect(center=(round(x), round(y))) if center else (round(x), round(y)))
+
+    def node(self, index, x, y, **transform):
+        """0009936c positions the returned sprite at x+w/2, y+h/2.
+
+        Play and glyph composites each contain one literal. Their serialized
+        negative origin is replaced by this node placement; applying it again
+        would shift the art out of its fixed touch box.
+        """
+        literals = self.atlas().literals(index)
+        if len(literals) != 1:
+            raise ValueError('Football node requires a single-literal sprite')
+        image = self.frame(literals[0][0])
+        self.blit(image, x + image.get_width() / 2, y + image.get_height() / 2,
+                  center=True, **transform)
+
+    def composite(self, index, x, y):
+        # Field chalk uses the direct composite path, retaining child offsets.
         for ref, dx, dy in self.atlas().literals(index):
-            image = self.frame(ref)
-            if scale != 1:
-                image = pygame.transform.smoothscale(image, (max(1, round(image.get_width() * scale)),
-                                                              max(1, round(image.get_height() * scale))))
-            self.canvas.blit(image, (round(x + dx * scale), round(y + dy * scale)))
+            self.blit(self.frame(ref), x + dx, y + dy)
 
-    def label(self, text, x, y, width=300, size=14, center=False):
-        markers = (('`', (24, 92, 219)), (';', (255, 51, 0)))
-        layout = self.text.layout('ArialRoundedMTBold16', text, width, TextStyle(size, 4, markers=markers))
-        self.text.draw_layout(self.canvas, 'ArialRoundedMTBold16', layout,
-                              x - layout.width / 2 if center else x, y)
-
-    def number(self, text, x, y, *, base=128, scale=1, center=False):
-        indices = [base + int(c) if c.isdigit() else base + 10 if c == '-' else 150 if c == ':' else 117
-                   for c in str(text) if c != ' ']
-        width = sum(self.frame(i).get_width() for i in indices) * scale
+    def label(self, text, x, y, *, width=320, style=LABEL_STYLE, center=False):
+        """Native line-box origin, with per-line horizontal centering."""
+        layout = self.text.layout(FONT, text, width, style)
         if center:
-            x -= width / 2
-        for i in indices:
-            self.sprite(i, x, y, scale)
-            x += self.frame(i).get_width() * scale
+            offsets = {line.start: -line.width / 2 for line in layout.lines}
+            glyphs = tuple(replace(g, x=g.x + offsets[line.start]) for line in layout.lines
+                           for g in layout.glyphs if line.start <= g.index < line.end)
+            layout = replace(layout, glyphs=glyphs)
+        self.text.draw_layout(self.canvas, FONT, layout, x, y)
 
     @staticmethod
     def hit(position):
@@ -58,61 +116,169 @@ class FootballRenderer:
                      if x - 35 <= px <= x + 35 and y - 53 <= py <= y + 17), None)
 
     def field(self, game):
-        # 000b8410 / 000b82f4: scrolling turf and authored chalk composites.
-        y = -game.position * 45
+        # 000b8410 / 000b82f4: field camera, turf, authored chalk and haze.
+        position = game.camera_position
+        y = -position * 45
         x = (y * -.40613848) % 320
         y = -((-y) % 480)
         for dx, dy in ((0, 0), (-320, 0), (0, 480), (-320, 480)):
-            self.sprite(86, x + dx, y + dy)
+            self.blit(self.frame(86), x + dx, y + dy)
         frames = (-83, -65, -69, -73, -77, -79, -76, -72, -68, -64, -84)
-        start = int(game.position) - 6
+        start = int(position) - 6
         for yard in range(start, start + 14):
             if 0 <= yard <= 100 and yard % 5 == 0:
-                y = 240 + (yard - game.position) * 45
-                self.sprite(frames[yard // 10] if yard % 10 == 0 else -80,
-                            int(y * -.4354067), int(y - 56))
+                y = 240 + (yard - position) * 45
+                self.composite(frames[yard // 10] if yard % 10 == 0 else -80,
+                               int(y * -.4354067), int(y - 56))
+        x, y = -(int(game.visual_ms * .02) % 320), int(game.visual_ms * .05) % 480
+        for dx, dy in ((0, 0), (0, -480), (320, 0), (320, -480)):
+            self.blit(self.frame(75), x + dx, y + dy, scale=4, alpha=.14705883)
+
+    def hud_digits(self, text, x, y, width=0, *, clock=False):
+        """000b6818 / 000b68b4 / 000b9e90: measured and drawn spacing differ."""
+        indices = [128 + int(c) if c.isdigit() else {'-': 138, '+': 139, ':': 150}[c] for c in text]
+        measure = sum(self.frame(i).get_width() for i in indices) + len(indices) - 1
+        x += int((width - measure) / 2)
+        for char, index in zip(text, indices):
+            image = self.frame(index)
+            w, h = image.get_size()
+            if clock:
+                height = 4 if char == ':' else h
+                native_y = int(480 - y - height + h * 1.5)
+                native_y -= native_y % 2
+                self.blit(image, x - 1 - w / 2, 480 - (native_y - 5) - h)
+                x += w + {'1': 2, ':': 4}.get(char, 0)
+            else:
+                height = {'-': 6, '+': 7, ':': 8}.get(char, h)
+                self.blit(image, x + 2 - w / 2, y + height - 2 * h)
+                x += w + 3
+
+    def hud(self, game):
+        strings = self.strings()
+        self.node(30, 10, 13)
+        self.node(153 if game.defense else 152, 19, 4)
+        # BM labels draw downward from local zero; center alignment adds
+        # half the measured line height (14), unlike ordinary sprite anchors.
+        self.label(strings[heading_id(game)], 109, 7, center=True)
+        self.blit(self.image(701 + min(game.down, 3)), 99, 33, center=True)
+        distance = int(100 - game.hud_position if game.defense else game.hud_position)
+        self.hud_digits(str(max(0, min(100, distance))), 186, 37, 20)
+        seconds = max(0, math.ceil(game.remaining_ms / 1000))
+        self.hud_digits(f'{seconds // 60}:{seconds % 60:02}', 165, 37, clock=True)
+        self.node(36, 109, 43, scale=1.3, scale_y=1.)
+        self.node(37, 133, 42, scale=1.42, scale_y=1.)
+        self.node(36, 243, 43, scale=1.3, scale_y=1., angle=180)
+        for text, x in ((team_name(strings, game.teams[0]), 133), (str(game.home), 164),
+                        (str(game.away), 195), (team_name(strings, game.teams[1]), 224)):
+            self.label(text, x, 45, center=True)
+        self.label('-', 174, 64, center=True)
+
+    def targets(self, game):
+        for target, (x, y) in zip(game.targets, TARGET_CENTERS):
+            if not target.visible:
+                continue
+            scale = target.scale
+            if target.phase == 2:
+                for growth, alpha in ((scale, 1 - .8 * scale), (scale + .2, 1 - 1.25 * scale)):
+                    # Native changes the ripple anchor to top-left after
+                    # setting a center position; its sheet is half-height.
+                    self.blit(self.frame(127), x - 2 - growth * 33, y - 7 - growth * 16.5,
+                              scale=growth, scale_y=growth * .5, alpha=alpha)
+            if target.phase in (3, 6):
+                # 000c0ac0: 110ms per shadow frame, 1.3 x 1.2 scale.
+                shadow = self.image(720 + (target.elapsed_ms // 110) % 4)
+                alpha = (math.sin(game.visual_ms / 1000 * 4) * .3 + .7) / 1.5
+                self.blit(shadow, x, 600 - y, scale=1.3, scale_y=1.2, alpha=alpha, center=True)
+            elif target.phase == 7 and target.elapsed_ms >= 100:
+                progress = (target.elapsed_ms - 100) / 500
+                for growth in (progress, min(1., 1.3 - progress), min(1., 1.5 - progress)):
+                    self.blit(self.frame(126), x - 2 - growth * 33, y - 7 - growth * 16.5,
+                              scale=growth, scale_y=growth * .5, alpha=1 - progress)
+            self.node(PLAY_FRAMES[target.code], *target_position(target, (x, y)), scale=scale, alpha=scale)
+            if abs(target.code) == 4:
+                self.node(-1, x, y - 38, scale=scale, alpha=scale)
+            elif abs(target.code) != 5:
+                for frame, gx, gy in yard_glyphs(target.yards, x, y - 38):
+                    self.node(frame, gx, gy, scale=scale, alpha=scale)
+
+    def effects(self, game):
+        """000b2494 / 000b4bd0: selected play squashes and spins away."""
+        for effect in game.effects:
+            remaining = effect.remaining_ms
+            if effect.selected:
+                if remaining >= 1000:
+                    r = (remaining - 1000) / 500
+                    sx, sy, alpha, angle = 1 + (1 - r) * 3, .2 + r * .8, 1., 1.
+                else:
+                    r = remaining / 1000
+                    sx, sy, alpha, angle = r * 4, .2 - r * .2, r, r * 180
+                _, dx, dy = self.atlas().literals(effect.frame)[0]
+                self.node(effect.frame, effect.x + dx, effect.y + dy,
+                          scale=sx, scale_y=sy, alpha=alpha, angle=angle)
+            else:
+                r = remaining / 1300
+                scale = r * effect.scale
+                self.node(effect.frame, effect.x, effect.y - 18 * scale,
+                          scale=scale, alpha=r)
+
+    def help(self, game):
+        strings = self.strings()
+        coach = self.frame(game.field_variant)
+        m = help_motion(game, coach.get_width())
+        self.node(64, m.x, m.y, scale=m.scale, alpha=m.alpha)
+        if m.alpha > 0:
+            self.node(153 if game.defense else 152, m.x + 6, m.y - 9,
+                      scale=m.scale, alpha=m.alpha)
+            # BM labels follow the moving panel, but do not inherit its scale.
+            self.label(strings[77 if game.defense else 76], m.x + 97, m.y - 6,
+                       width=166, style=TITLE_STYLE, center=True)
+            self.label(game.instruction, m.x + 25, m.y + 26, width=256, style=HELP_STYLE)
+            self.label(strings[166], m.x + 18, m.y + 183)
+            best = self.text.layout(FONT, strings[165], 320, LABEL_STYLE)
+            self.label(strings[165], m.x + 289 - best.width, m.y + 183)
+            codes = legend_codes(game)
+            spacing = 217 // (len(codes) - 1) if len(codes) > 1 else 0
+            for i, code in enumerate(codes):
+                frame = self.frame(self.atlas().literals(PLAY_FRAMES[code])[0][0])
+                x = m.x + 45 + i * spacing - 35 + frame.get_width() / 2
+                # 000be110 sets anchor (.5,0) after node placement.
+                bottom = m.y + 141 + frame.get_height() / 2
+                s = m.scale / 1.1
+                self.blit(frame, x - frame.get_width() * s / 2, bottom - frame.get_height() * s,
+                          scale=s, alpha=m.alpha)
+        self.blit(coach, m.coach_x, 457 - coach.get_height(), alpha=m.coach_alpha)
+
+    def feedback(self, game):
+        motion = feedback_motion(game)
+        if motion is None:
+            return
+        self.node(66, motion.x, 240)
+        if motion.shine_x is not None:
+            self.node(65, motion.shine_x, 240)
+        if motion.visible:
+            image = self.feedback_image(feedback_text(game, self.strings(), motion.index))
+            height = self.feedback_font().height
+            y = 259 - (height >> 2) if image.get_height() <= height else 259
+            self.blit(image, 160, y, scale=motion.scale, angle=motion.angle, center=True)
 
     def draw(self, target, session):
-        g = session.engine.football
+        game = session.engine.football
         self.canvas.fill((0, 0, 0))
-        self.field(g)
-        # Original header art, with its baked-in down/yard labels.
-        self.sprite(30, 10, 13)
-        self.sprite(153 if g.defense else 152, 19, 4)
-        self.label('Defense' if g.defense else 'Offense', 19, 7, 150, 14)
-        self.label(f'{g.down + 1 if g.down < 4 else 4}', 97, 26, 20, 11)
-        self.number(100 - g.position if g.defense else g.position, 195, 29, center=True)
-        self.label(f'{g.home} - {g.away}', 177, 18, 100, 12, center=True)
-        if g.half == 3:
-            self.sprite(151, 170, 38)
-        else:
-            seconds = math.ceil(g.remaining_ms / 1000)
-            self.number(f'{seconds // 60}:{seconds % 60:02}', 177, 50, center=True)
-        for t, (x, y) in zip(g.targets, TARGET_CENTERS):
-            if not t.visible:
-                continue
-            self.sprite(PLAY_FRAMES[t.code], x, y, t.scale)
-            if t.code in (1, 2, 6, 7, -1, -2, -3):
-                yards = t.yards + (5 if t.code in (6, 7) and not g.defense else 0)
-                self.number(yards, x, y + 2, base=107 if yards > 0 else 91,
-                            scale=t.scale, center=True)
-        if 20 <= g.phase <= 23 or g.phase == 25:
-            coach = self.frame(g.field_variant)
-            self.canvas.blit(coach, (320 - coach.get_width(), 457 - coach.get_height()))
-            self.sprite(64, 7, 126)
-            title = 'Sudden Death' if g.half == 3 else 'Defense' if g.defense else 'Offense'
-            self.label(title, 25, 142, 275, 22)
-            self.label(g.instruction, 25, 188, 270, 14)
-            if g.phase_elapsed_ms > (3500 if g.first_help else 900):
-                self.label('Touch to continue', 160, 292, 270, 12, center=True)
-        elif g.phase == 0:
-            count = min(3, math.ceil(g.phase_ms / 800))
-            self.sprite(count + 1, 120, 200)
-        elif g.message_phase != -1 or g.phase in (1, 7, 26):
-            self.sprite(66, -24, 240)
-            self.label(g.message if g.phase != 7 else 'Change possession', 160, 244, 300, 24, center=True)
+        self.field(game)
+        self.targets(game)
+        self.effects(game)
+        self.hud(game)
+        self.feedback(game)
+        if game.phase in (20, 21, 22, 23, 25):
+            self.help(game)
+        elif game.phase == 0:
+            motion = countdown_motion(game.phase_ms)
+            self.blit(self.frame(motion.frame), 159.5, 240, scale=motion.scale,
+                      alpha=motion.alpha, angle=motion.angle, center=True)
         self.canvas.blit(self.art.frame(126, 47), (0, 431))
         self.canvas.blit(self.art.frame(126, 49), (0, 408))
-        self.label('Touch a play to select it', 70, 450, 240, 12)
+        footer = footer_id(game)
+        if footer is not None:
+            self.label(self.strings()[footer], 180, 462, center=True)
         target.blit(pygame.transform.smoothscale(self.canvas, target.get_size()), (0, 0))
         return [(pygame.Rect(0, 422, 60, 58), ('menu',))]

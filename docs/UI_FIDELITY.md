@@ -568,12 +568,16 @@ label transition. Word/picture grids use atlas 446's colored tiles/arrows,
 522/523's blue glyphs, episode-supplied symbols/backgrounds and the recovered
 tilted-board projection. Their native white/orange CS fonts, measured tutorial
 panels, portraits, time/score HUD, cloud borders, prompts and banner movement
-are specified in [GRID_UI.md](GRID_UI.md). Football uses atlas 290's nested field markings,
-turf, changing play symbols, coach art and fixed nine-target input bounds.
+are specified in [GRID_UI.md](GRID_UI.md). Football uses atlas 290's nested
+field markings, turf, changing play symbols, coach art and fixed nine-target
+input bounds. Its recovered help/legend, Arial and CS fonts, team/score HUD,
+camera easing, countdown and result/selection animations are specified in
+[FOOTBALL_UI.md](FOOTBALL_UI.md).
 No artwork is embedded in the implementation.
 
 These paths still need visual comparison with original recordings. Football
-uses simplified camera motion, banners and localized team labels. Grid tile
+touchdown particles, internal score flights, parts of audio staging and the
+final exit overlay remain incomplete. Grid tile
 side faces, highlights, particles, ring pulses, flying score deltas, outgoing-board
 generation timing and some overlay boundaries remain approximate. Fast grid pointer
 motion does not interpolate skipped cells. Service 88 notices now use the
