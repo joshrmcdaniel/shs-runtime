@@ -21,20 +21,84 @@ def npc_session(*, value=0, previous_asset=3012, previous_count=-1, words=None):
     s.engine.ui_defaults = {74: 0, 75: 7}
     s.engine.character_names[1] = 'Friend'
     s.engine.character_art_variants[1] = [100] * 5
-    for key, number in ((403, value), (3000, previous_asset), (3001, previous_count)):
+    for key, number in ((407, value), (3000, previous_asset), (3001, previous_count)):
         s.engine.numbers[s.engine.number_key(1, key)] = number
     s.advance()
     return s
 
 
 class RelationshipTests(unittest.TestCase):
+    def test_vm_relationship_updates_refresh_icons_and_script_visible_caches(self):
+        words, refs = text_words('First meeting.', 'The relationship changes.')
+        r = Resources(program(
+            *host_call(52, 1, 407, 0), *host_call(13, refs[0], 1),
+            *host_call(52, 1, 403, 3),  # Unrelated property must not select the icons.
+            *host_call(52, 1, 407, -4), *host_call(13, refs[1], 1),
+            *host_call(53, 1, 3000), 0x21, *host_call(53, 1, 3001), 0x21,
+            (0x1f, 0xfe02), words=words))
+        initial = Session(r)
+        initial.engine.ui_defaults = {74: 0, 75: 7}
+        initial.engine.character_names[1] = 'Friend'
+        initial.engine.character_art_variants[1] = [100] * 5
+        initial.advance()
+        first = initial.engine.dialogue_animation.relationship.change
+        self.assertEqual((first.asset_id, first.count), (3012, 1))
+        restored = Session.from_snapshot(r, json.loads(json.dumps(initial.snapshot())))
+        for session in (initial, restored):
+            with self.subTest(restored=session is restored):
+                self.assertEqual(answer_screen(session).name, 'dialogue')
+                rel = session.engine.dialogue_animation.relationship
+                self.assertEqual((rel.change.asset_id, rel.change.count,
+                                  rel.change.previous_asset, rel.change.previous_count),
+                                 (3011, 4, 3012, 1))
+                self.assertEqual(session.engine.numbers[session.engine.number_key(1, 407)], -4)
+                self.assertEqual(session.engine.numbers[session.engine.number_key(1, 403)], 3)
+                self.assertEqual(session.engine.sound_ids, [8006])
+                held = session.vm.snapshot()
+                session.tick(rel.duration_ms)
+                self.assertEqual([pose.asset_id for pose in rel.poses()], [3011] * 4)
+                self.assertEqual(session.vm.snapshot(), held)
+                self.assertEqual(answer_screen(session).request.args, (3011, 4))
+
+    @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user content unavailable')
+    def test_football_star_adam_relationship_follows_the_original_script(self):
+        from shs_runtime.content import ContentLibrary
+        with ContentLibrary(Path('.shs-library')) as library:
+            session = Session(library.open_episode('Football Star'))
+            session.advance()
+            seen = []
+            for _ in range(60):
+                action = session.pending
+                if action.name == 'dialogue' and action.details['visible_character_id'] == 10:
+                    change = session.engine.dialogue_animation.relationship.change
+                    value = session.engine.numbers[session.engine.number_key(10, 407)]
+                    seen.append((session.scene, action.request.pc, value, change.asset_id, change.count))
+                    if len(seen) == 3:
+                        break
+                if action.name == 'choice':
+                    session.answer(next(i for i, enabled in enumerate(action.details['enabled']) if enabled))
+                elif action.name == 'text_input':
+                    session.answer('Alex')
+                elif action.name == 'character_picker':
+                    session.answer(0); session.tick(25); session.answer()
+                elif action.name in ('dialogue', 'presentation', 'vm_pause'):
+                    answer_screen(session)
+                else:
+                    self.fail(f'Unexpected opening action: {action.name}')
+            self.assertEqual(seen, [(25006, 445, -1, 3011, 1), (25006, 453, -1, 3011, 1),
+                                   (25006, 462, -4, 3011, 4)])
+            rel = session.engine.dialogue_animation.relationship
+            self.assertEqual((rel.change.previous_asset, rel.change.previous_count), (3011, 1))
+            session.tick(rel.duration_ms)
+            self.assertEqual([pose.asset_id for pose in rel.poses()], [3011] * 4)
+
     def test_native_icon_count_romance_suppression_and_visible_npc_rules(self):
         for value, count in ((-32768, 4), (-4, 4), (-3, 3), (-2, 2), (-1, 1),
                              (0, 1), (1, 2), (2, 3), (3, 4), (32767, 4)):
             for romance in (0, 1):
                 e = EngineState()
                 e.numbers[e.number_key(0, 601)] = romance
-                e.numbers[e.number_key(1, 403)] = value
+                e.numbers[e.number_key(1, 407)] = value
                 rel = e.prepare_relationship(1)
                 self.assertEqual((rel.asset_id, rel.count), (3011 if value < 0 else 3010 if romance else 3012, count))
                 e.numbers[e.number_key(1, 629)] = 1
@@ -179,7 +243,7 @@ class RelationshipTests(unittest.TestCase):
                 s.engine.character_art_variants[1] = s.engine.character_art_variants[character]
                 s.engine.character_names[1] = 'Friend'
                 s.engine.numbers[s.engine.number_key(0, 601)] = romance
-                for key, number in ((403, value), (629, 0), (3000, prior_asset), (3001, prior_count)):
+                for key, number in ((407, value), (629, 0), (3000, prior_asset), (3001, prior_count)):
                     s.engine.numbers[s.engine.number_key(1, key)] = number
                 ui = Desktop(s, audio=False)
                 ui.session.tick(820 if value == 2 else 1300)

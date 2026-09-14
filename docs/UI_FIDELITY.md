@@ -650,16 +650,25 @@ zero; `FUN_000a90f0` selects the asset from numeric state:
 | Condition | Result |
 | --- | --- |
 | NPC-owned key 629 equals 1 | Hide indicators |
-| NPC-owned key 403 is negative | Skull, resource 3011 |
+| NPC-owned key 407 (`0x197`) is negative | Skull, resource 3011 |
 | NPC matches global key 601 and relationship is nonnegative | Heart, resource 3010 |
 | Otherwise | Smiley face, resource 3012 |
 
-`FUN_000ab048` maps relationship key 403 to indicator count: -3→3, -2→2,
+`FUN_000ab048` maps relationship key 407 (`0x197`) to indicator count: -3→3, -2→2,
 -1→1, 0→1, 1→2, 2→3; other values use 4. Tables at 0x0025b31c/324 map the
 base icons to loss-ring/effect resources 3013–3018. Inspection of the actual
 APK confirms a heart, skull, smiley, pink/green/yellow rings, broken heart,
 red-eyed skull and surprised face. No semantic labels have been inferred from
 filenames.
+
+Both native functions read key `0x197`; the earlier documentation and runtime
+lookup of key 403 were incorrect. Football Star supplies a regression case:
+Adam (character 10) has key 407 set to -1 at scene 25006's dialogue PCs 445 and
+453, then -4 at PC 462. His indicators therefore change from one skull to four.
+The scripts write this property through service 52; the VM already preserved
+the correct values, including in saves. Existing saves keep their current
+dialogue animation, and the next NPC dialogue refreshes its indicators from
+key 407 without a save migration.
 
 `FUN_000ab048` reads the previous icon/count from NPC-owned numeric keys
 3000/3001. A previous count of -1 suppresses change animation; otherwise any

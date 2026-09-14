@@ -128,7 +128,7 @@ class EngineState:
         if character <= 0:
             return None
         owned = lambda key: self.numbers.get(self.number_key(character, key), 0)
-        value = owned(403)
+        value = owned(407)  # 0x197 in FUN_000ab048 and FUN_000a90f0.
         asset = (-1 if owned(629) == 1 else 3011 if value < 0 else
                  3010 if character == self.numbers.get(self.number_key(0, 601), 0) else 3012)
         count = {-3: 3, -2: 2, -1: 1, 0: 1, 1: 2, 2: 3}.get(value, 4)

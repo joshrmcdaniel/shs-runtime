@@ -3,6 +3,13 @@
 User-visible changes are recorded here. Changes awaiting a versioned release
 are listed under Unreleased.
 
+## Unreleased
+
+### Fixed
+
+- Relationship indicators now read the correct NPC property, so script changes
+  update the icons and count, including Adam's four skulls in Football Star.
+
 ## v0.1.0
 
 ### Added
