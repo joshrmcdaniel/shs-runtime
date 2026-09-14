@@ -1,0 +1,571 @@
+"""Presentation-independent game session and versioned, local JSON saves."""
+from copy import deepcopy
+from dataclasses import asdict, fields, is_dataclass
+import json
+import os
+from pathlib import Path
+import tempfile
+from types import UnionType
+from typing import get_args, get_origin, get_type_hints
+
+from .content import EpisodeResources, digest
+from .engine import EngineAction, EngineState
+from .dialogue_animation import DialogueAnimation, DialoguePortrait
+from .relationships import RelationshipAnimation, RelationshipChange
+from .minigames import NativeRandom, RAND48_INITIAL, RAND48_MASK
+from .vm import KiwiVM, StopKind, VMError, VMStop, signed16
+
+
+class SaveError(ValueError):
+    pass
+
+
+def _typed_value(value, annotation):
+    """Decode dataclass state without permitting arbitrary object construction."""
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin is UnionType:
+        for candidate in args:
+            try:
+                return _typed_value(value, candidate)
+            except SaveError:
+                pass
+        raise SaveError('Invalid optional state value')
+    if is_dataclass(annotation):
+        names = {f.name for f in fields(annotation)}
+        if not isinstance(value, dict) or set(value) != names:
+            raise SaveError('Engine snapshot fields do not match this runtime')
+        hints = get_type_hints(annotation)
+        return annotation(**{key: _typed_value(item, hints[key]) for key, item in value.items()})
+    if origin is dict:
+        if not isinstance(value, dict):
+            raise SaveError('Expected a state map')
+        result = {}
+        for key, item in value.items():
+            if args[0] is int and isinstance(key, str):
+                try:
+                    converted = int(key)
+                except ValueError:
+                    raise SaveError('Invalid numeric state key') from None
+                if str(converted) != key:
+                    raise SaveError('Noncanonical numeric state key')
+                key = converted
+            result[_typed_value(key, args[0])] = _typed_value(item, args[1])
+        return result
+    if origin in (list, tuple):
+        if not isinstance(value, (list, tuple)):
+            raise SaveError('Expected a state sequence')
+        if origin is list:
+            return [_typed_value(item, args[0]) for item in value]
+        if len(value) != len(args):
+            raise SaveError('Invalid state tuple size')
+        return tuple(_typed_value(item, hint) for item, hint in zip(value, args))
+    if type(value) is not annotation:
+        raise SaveError(f'Expected state value of type {annotation.__name__}')
+    return deepcopy(value)
+
+
+def _validate_choice(details):
+    try:
+        options, values, enabled = (details[k] for k in ('options', 'values', 'enabled'))
+        if not (isinstance(options, list) and isinstance(values, list) and isinstance(enabled, list)
+                and len(options) == len(values) == len(enabled)
+                and all(isinstance(v, str) for v in options)
+                and all(type(v) is int and -32768 <= v <= 32767 for v in values)
+                and all(type(v) is bool for v in enabled)
+                and type(details['timeout_ms']) is int and 0 <= details['timeout_ms'] <= 32767
+                and type(details['timeout_result']) is int
+                and -32768 <= details['timeout_result'] <= 32767
+                and all(isinstance(details[k], str) for k in ('title', 'text'))
+                and all(type(details[k]) is int for k in ('character_id', 'portrait_mode'))):
+            raise SaveError('Invalid choice data')
+    except (KeyError, TypeError) as error:
+        raise SaveError('Incomplete choice data') from error
+
+
+class Session:
+    """Execute original KiWi code until real player input is required.
+
+    Unknown engine services stay suspended. A bounded advance prevents an
+    unsupported script loop from freezing the desktop event loop forever.
+    """
+
+    def __init__(self, resources: EpisodeResources, *, start_script: int = 25001):
+        self.resources = resources
+        self.scene = start_script
+        self.vm = KiwiVM(resources.program(start_script))
+        self.engine = EngineState()
+        self.pending: EngineAction | None = None
+        self.remaining_ms: int | None = None
+        self.scene_loads = 0
+
+    @property
+    def save_path(self) -> Path:
+        return (self.resources.library.directory / 'saves'
+                / (self.resources.identity['episode_sha256'] + '.shs-save.json'))
+
+    def dialogue_page(self):
+        """Layout is a session contract, shared by headless and desktop input."""
+        action = self.pending
+        if not action or action.name != 'dialogue' or not hasattr(self.resources, 'dialogue_layout'):
+            return None
+        return self.resources.dialogue_layout().page(action.details, action.details.get('page_start', 0))
+
+    def _prepare_dialogue(self):
+        details = self.pending.details
+        details.setdefault('page_start', 0)
+        page = self.dialogue_page()
+        details['page_end'] = page.end if page else len(details['text'])
+
+    def advance(self, *, max_steps: int = 100_000, max_events: int = 10_000) -> EngineAction:
+        if self.pending is not None:
+            return self.pending
+        if max_steps < 1 or max_events < 1:
+            raise ValueError('Execution budgets must be positive')
+        deadline = self.vm.steps_executed + max_steps
+        for _ in range(max_events):
+            remaining = deadline - self.vm.steps_executed
+            if remaining <= 0:
+                raise VMError('Session instruction budget exceeded before the next input')
+            request = self.vm.run(remaining)
+            if request.kind == StopKind.YIELD:
+                action = self.engine.dispatch(self.vm, resource_exists=self.resources.exists)
+                if action.completed:
+                    continue
+                if action.name == 'choice':
+                    _validate_choice(action.details)
+                    self.remaining_ms = action.details['timeout_ms'] or None
+                self.pending = action
+                if action.name == 'dialogue':
+                    self._prepare_dialogue()
+                    self.engine.dialogue_animation = DialogueAnimation.start(
+                        action.details, self.engine.character_art_variants, self.engine.dialogue_animation)
+                else:
+                    self.engine.dialogue_animation = None
+                return action
+            if request.kind == StopKind.HALT and self.engine.scheduled_scripts:
+                scene, _flag = self.engine.scheduled_scripts[-1]
+                program = self.resources.program(scene)
+                self.engine.scheduled_scripts.pop()
+                self.vm.load_next(program)
+                self.scene, self.scene_loads = scene, self.scene_loads + 1
+                continue
+            if request.kind == StopKind.BUDGET:
+                raise VMError('Session instruction budget exceeded before the next input')
+            self.pending = EngineAction('finished' if request.kind == StopKind.HALT else 'vm_pause',
+                                        request, False)
+            if self.pending.name == 'finished':
+                self.engine.dialogue_animation = None
+            return self.pending
+        raise VMError('Session service budget exceeded before the next input')
+
+    def _complete_choice(self, result: int):
+        self.engine.result_cells[0] = signed16(result)  # FUN_000add90
+        self.vm.resume(result)
+        self.pending, self.remaining_ms = None, None
+
+    def answer(self, value=None) -> EngineAction:
+        action = self.pending
+        if action is None:
+            raise VMError('There is no pending input')
+        if action.name == 'choice':
+            options = action.details
+            if (type(value) is not int or not 0 <= value < len(options['values'])
+                    or not options['enabled'][value]):
+                raise ValueError('Choose an enabled option by its zero-based index')
+            self._complete_choice(options['values'][value])
+        elif action.name == 'character_picker':
+            picker = self.engine.character_picker
+            if value is not None:
+                if picker.select(value):
+                    self.engine.sound_id, self.engine.sound_ids = 8013, [8013]
+                    self.engine.sound_serial += 1
+                return action
+            self.engine.sound_id, self.engine.sound_ids = 8010, [8010]
+            self.engine.sound_serial += 1
+            self._complete_choice(picker.selected)  # FUN_000d1b48: original index, not ID.
+            self.engine.character_picker = None
+        elif action.name == 'word_game':
+            game = self.engine.word_game
+            if game.pick(value, self.engine.random48):
+                self.engine.sound_id = 8001 if game.last_delta > 0 else 8002
+                self.engine.sound_ids = [self.engine.sound_id]
+                self.engine.sound_serial += 1
+            return action
+        elif action.name == 'word_grid':
+            if value is not None:
+                raise ValueError('Grid input uses pointer phases and cell indices')
+            return self.grid_pointer('down', None)
+        elif action.name == 'football':
+            game = self.engine.football
+            before = game.sound_serial
+            game.tap(value, self.engine.random)
+            self._game_sound(game, before)
+            return action
+        elif action.name == 'text_input':
+            if not isinstance(value, str) or len(value) > 20 or '\x00' in value:
+                raise ValueError('Input must contain at most 20 characters and no NUL')
+            try:
+                value.encode('latin-1')
+            except UnicodeEncodeError:
+                raise ValueError('This game supports Latin-1 input characters') from None
+            self.engine.dynamic_strings[0] = self.engine.last_input = value
+            self.vm.resume(0x7ff5)  # FUN_000d3f5c
+            self.pending = None
+        elif action.name in ('presentation', 'dialogue', 'vm_pause'):
+            if value is not None:
+                raise ValueError('This screen expects an acknowledgement')
+            if action.name == 'dialogue' and not self.engine.dialogue_animation.complete:
+                self.engine.dialogue_animation.finish()
+                return action
+            if action.name == 'dialogue' and action.details['page_end'] < len(action.details['text']):
+                action.details['page_start'] = action.details['page_end']
+                self._prepare_dialogue()
+                self.engine.dialogue_animation.next_page(len(action.details['text']) - action.details['page_start'])
+                return action
+            if action.name == 'vm_pause':
+                self.vm.continue_after_pause()
+            else:
+                self.vm.resume(0)
+            self.pending = None
+        else:
+            raise VMError(f'Cannot answer {action.name}; its native contract is not implemented')
+        return self.advance()
+
+    def _game_sound(self, game, before):
+        if game.sound_serial != before:
+            self.engine.sound_ids = game.sound_ids[:]
+            self.engine.sound_id = game.sound_ids[0]
+            self.engine.sound_serial += 1
+
+    def grid_pointer(self, phase, index=None):
+        """Feed a down/move/up/cancel event to the pending original grid."""
+        if not self.pending or self.pending.name != 'word_grid':
+            raise VMError('There is no pending grid game')
+        game = self.engine.word_grid
+        before = game.sound_serial
+        game.pointer(phase, index, self.engine.random)
+        self._game_sound(game, before)
+        return self.pending
+
+    def tick(self, elapsed_ms: int) -> EngineAction:
+        """Advance active time only; time spent outside the app is excluded."""
+        if type(elapsed_ms) is not int or elapsed_ms < 0:
+            raise ValueError('Elapsed time must be nonnegative milliseconds')
+        if self.engine.scene_badge:
+            self.engine.scene_badge.tick(elapsed_ms)
+        self.engine.notice_ms = max(0, self.engine.notice_ms - elapsed_ms)
+        if not self.engine.notice_ms:
+            self.engine.notice = ''
+        if self.engine.loading:
+            if self.engine.loading.tick(elapsed_ms):
+                if self.engine.loading.blocking:
+                    self.vm.resume(0)  # No choice-result cell is written.
+                self.engine.loading = None
+                self.pending = None
+                return self.advance()
+            return self.pending
+        if self.pending and self.pending.name == 'vm_pause':
+            return self.answer()
+        if self.pending and self.pending.name == 'dialogue':
+            self.engine.dialogue_animation.tick(elapsed_ms)
+            return self.pending
+        if self.pending and self.pending.name == 'character_picker':
+            self.engine.character_picker.tick(elapsed_ms)
+            return self.pending
+        if self.pending and self.pending.name == 'word_game':
+            game = self.engine.word_game
+            if game.tick(elapsed_ms):
+                self._complete_choice(game.score)  # FUN_000add90, mode 2.
+                self.engine.word_game = None
+                return self.advance()
+            return self.pending
+        if self.pending and self.pending.name in ('word_grid', 'football'):
+            kind = self.pending.name
+            game = getattr(self.engine, kind)
+            before = game.sound_serial
+            finished = game.tick(elapsed_ms, self.engine.random)
+            self._game_sound(game, before)
+            if finished:
+                if kind == 'football':
+                    self.engine.football_scores = [game.home, game.away]
+                self.vm.resume(game.result)  # 000b10d8: result cells are unchanged.
+                self.pending = None
+                setattr(self.engine, kind, None)
+                return self.advance()
+            return self.pending
+        if self.remaining_ms is not None:
+            self.remaining_ms = max(0, self.remaining_ms - elapsed_ms)
+            if self.remaining_ms == 0:
+                # For incremental choices the native callback maps the timeout
+                # selection through the per-option return-value table as well.
+                details = self.pending.details
+                selected = details['timeout_result']
+                if self.pending.request.yield_id == 4:
+                    if not 0 <= selected < len(details['values']):
+                        raise VMError('Incremental choice timeout index is out of range')
+                    selected = details['values'][selected]
+                self._complete_choice(selected)
+                return self.advance()
+        return self.advance()
+
+    def snapshot(self) -> dict:
+        return dict(format='shs-runtime-save', version=6,
+                    content=self.resources.identity, scene=self.scene,
+                    script_sha256=digest(self.vm.program.to_bytes()),
+                    vm=self.vm.snapshot(), engine=asdict(self.engine),
+                    pending=dict(name=self.pending.name, details=deepcopy(self.pending.details))
+                    if self.pending else None,
+                    remaining_ms=self.remaining_ms, scene_loads=self.scene_loads)
+
+    @classmethod
+    def from_snapshot(cls, resources: EpisodeResources, state: dict):
+        try:
+            if state['format'] != 'shs-runtime-save' or state['version'] not in (1, 2, 3, 4, 5, 6):
+                raise SaveError('Unsupported save format or version')
+            legacy = state['version'] == 1
+            if state['version'] < 6:
+                state = deepcopy(state)
+                state['engine']['loading'] = None
+                if state['engine'].get('dialogue_animation') is not None:
+                    state['engine']['dialogue_animation']['relationship'] = None
+            if state['version'] < 5:
+                state = deepcopy(state)
+                state['engine']['character_picker'] = None
+                state['engine']['scene_badge'] = None
+                state['engine']['next_dialogue_wobble'] = False
+                if state['engine'].get('dialogue_animation') is not None:
+                    state['engine']['dialogue_animation']['wobble_direction'] = 0
+            if state['version'] < 4:
+                state = deepcopy(state)
+                state['engine']['dialogue_animation'] = None
+            if state['version'] < 3:
+                state = deepcopy(state)
+                state['engine'].update(random48=dict(state=RAND48_INITIAL), word_game=None,
+                                       random=asdict(NativeRandom()), word_grid=None,
+                                       grid_tutorials_seen=False, sound_ids=[],
+                                       football=None, football_scores=[None, None],
+                                       next_dialogue_notice='', notice='', notice_ms=0)
+            if legacy:
+                state = deepcopy(state)
+                state['engine']['panel'].update(presentation_mode=0, theme=-1, emphasis_theme=1)
+            if state['content'] != resources.identity:
+                raise SaveError('Save requires the same imported APK and episode')
+            if type(state['scene']) is not int or not 0 <= state['scene'] <= 65535:
+                raise SaveError('Invalid saved scene ID')
+            session = cls(resources, start_script=state['scene'])
+            if state['script_sha256'] != digest(session.vm.program.to_bytes()):
+                raise SaveError('Saved script does not match the loaded script')
+            session.vm = KiwiVM.from_snapshot(session.vm.program, state['vm'])
+            session.engine = _typed_value(state['engine'], EngineState)
+            engine = session.engine
+            if not 0 <= engine.random48.state <= RAND48_MASK:
+                raise SaveError('Invalid random generator state')
+            if not 0 <= engine.random.state <= 0xffffffff:
+                raise SaveError('Invalid native random generator state')
+            if engine.word_game is not None:
+                engine.word_game.validate()
+            if engine.word_grid is not None:
+                engine.word_grid.validate()
+            if engine.football is not None:
+                engine.football.validate()
+            if engine.character_picker is not None:
+                engine.character_picker.validate()
+            if engine.scene_badge is not None:
+                engine.scene_badge.validate()
+            if engine.loading is not None:
+                engine.loading.validate()
+            if (len(engine.football_scores) != 2 or
+                    any(v is not None and not -32768 <= v <= 32767 for v in engine.football_scores)):
+                raise SaveError('Invalid football scores')
+            if not 0 <= engine.notice_ms <= len(engine.notice) * 165 + 300:
+                raise SaveError('Invalid dialogue notice timer')
+            if len(engine.dynamic_strings) != 11 or len(engine.result_cells) != 10:
+                raise SaveError('Invalid engine slot count')
+            if any(v is not None and not -32768 <= v <= 32767 for v in engine.result_cells):
+                raise SaveError('Invalid engine result word')
+            if engine.choice_builder is not None:
+                _validate_choice(engine.choice_builder)
+            pending = state['pending']
+            if pending is None and session.vm.pending is not None:
+                raise SaveError('Suspended VM is missing its pending screen')
+            if pending is not None:
+                request = session.vm.pending
+                name, details = pending['name'], pending['details']
+                if name == 'loading' and engine.loading and not engine.loading.blocking:
+                    # Service 91(0) has already popped its argument. The host
+                    # gate pauses before the very next instruction, so the
+                    # completed call is recoverable from the program and stack
+                    # backing without inventing a suspended VM frame.
+                    pc = session.vm.pc - 1
+                    if request is not None or not 0 <= pc < len(session.vm.program.instructions):
+                        raise SaveError('Invalid completed loading call')
+                    instruction = session.vm.program.instructions[pc]
+                    if (not ((instruction.opcode == 0x1f and instruction.operand == 0x5b01)
+                             or (instruction.opcode == 0x1e and instruction.operand == 91))
+                            or session.vm.result != 0
+                            or session.vm.read_word(session.vm.stack_base + session.vm.sp) != 0):
+                        raise SaveError('Loading gate does not match the completed VM call')
+                    request = VMStop(StopKind.YIELD, pc, instruction.byte_offset, 91, (0,))
+                if request is None or not isinstance(details, dict):
+                    raise SaveError('Pending screen has no suspended VM request')
+                expected_kind = {'finished': StopKind.HALT, 'vm_pause': StopKind.PAUSE}.get(name, StopKind.YIELD)
+                if request.kind != expected_kind:
+                    raise SaveError('Pending screen does not match the VM stop')
+                allowed = {'choice': (1, 4), 'character_picker': (78,), 'word_game': (71,), 'word_grid': (96,), 'football': (94,), 'dialogue': (13, 65), 'text_input': (17, 40),
+                           'presentation': (8,), 'loading': (91,), 'finished': (None,), 'vm_pause': (None,)}
+                if name != 'unhandled_yield' and (name not in allowed or request.yield_id not in allowed[name]):
+                    raise SaveError('Pending screen does not match its native service')
+                if name == 'choice':
+                    _validate_choice(details)
+                elif name == 'loading':
+                    if (engine.loading is None or len(request.args) != 1 or details
+                            or engine.loading.blocking != bool(request.args[0])):
+                        raise SaveError('Loading screen does not match its VM arguments')
+                elif name == 'character_picker':
+                    _typed_value(details['text'], str)
+                    if engine.character_picker is None or len(request.args) != 3:
+                        raise SaveError('Character selection is missing its native state')
+                    text, count, address = request.args
+                    if (not 1 <= count <= 5 or
+                            engine.character_picker.characters != [signed16(session.vm.read_word(address + i))
+                                                               for i in range(count)]
+                            or details['text'] != engine.resolve_text(session.vm, text)):
+                        raise SaveError('Character selection does not match its VM arguments')
+                elif name == 'word_game':
+                    for key in ('title', 'text'):
+                        _typed_value(details[key], str)
+                    for key in ('character_id', 'portrait_mode'):
+                        _typed_value(details[key], int)
+                elif name == 'word_grid':
+                    for key in ('background_id', 'left_character', 'left_expression', 'right_character', 'right_expression'):
+                        _typed_value(details[key], int)
+                elif name == 'dialogue':
+                    for key in ('text', 'raw_text', 'speaker'):
+                        _typed_value(details[key], str)
+                    for key in ('character_id', 'expression', 'mode'):
+                        _typed_value(details[key], int)
+                    if legacy:
+                        details = engine.present_dialogue(details['character_id'], details['expression'],
+                                                          details['raw_text'], details['mode'], settled_relationship=True)
+                    else:
+                        for key in ('visible_character_id', 'presentation_mode', 'theme',
+                                    'emphasis_theme', 'page_start', 'page_end'):
+                            _typed_value(details[key], int)
+                        if (details['presentation_mode'] not in (1, 2, 3, 4)
+                                or details['emphasis_theme'] not in (1, 2)
+                                or not 0 <= details['page_start'] <= details['page_end'] <= len(details['text'])):
+                            raise SaveError('Invalid dialogue presentation or page')
+                    if state['version'] < 6:
+                        change = engine.prepare_relationship(details['visible_character_id'], settled=True)
+                        details['relationship'] = asdict(change) if change else None
+                    change = _typed_value(details['relationship'], RelationshipChange | None)
+                    if change is not None:
+                        change.validate()
+                        if (change.character_id != details['visible_character_id']
+                                or details['presentation_mode'] not in (1, 2)
+                                or engine.numbers.get(engine.number_key(change.character_id, 3000)) != change.asset_id
+                                or engine.numbers.get(engine.number_key(change.character_id, 3001)) != change.count):
+                            raise SaveError('Relationship indicators do not match their NPC cache')
+                    elif details['visible_character_id'] > 0 and details['presentation_mode'] in (1, 2):
+                        raise SaveError('NPC dialogue is missing its relationship state')
+                elif name == 'presentation':
+                    for key in ('title', 'subtitle'):
+                        _typed_value(details[key], str)
+                    _typed_value(details['asset_id'], int)
+                elif name == 'text_input':
+                    for key in ('title', 'prompt', 'default'):
+                        _typed_value(details[key], str)
+                session.pending = EngineAction(name, request, False, deepcopy(details))
+                if name == 'dialogue':
+                    saved_end = details.get('page_end')
+                    session._prepare_dialogue()
+                    if not legacy and session.pending.details['page_end'] != saved_end:
+                        raise SaveError('Saved dialogue page does not match its layout')
+                    if state['version'] < 4:
+                        engine.dialogue_animation = DialogueAnimation.start(
+                            session.pending.details, engine.character_art_variants)
+                        engine.dialogue_animation.settle()
+                    if state['version'] < 6 and engine.dialogue_animation is not None:
+                        engine.dialogue_animation.relationship = RelationshipAnimation(change, 0) if change else None
+                        if engine.dialogue_animation.relationship:
+                            engine.dialogue_animation.relationship.settle()
+            motion = engine.dialogue_animation
+            if motion is not None:
+                motion.validate()
+                if not session.pending or session.pending.name not in ('dialogue', 'vm_pause'):
+                    raise SaveError('Dialogue animation does not match its pending screen')
+            if session.pending and session.pending.name == 'dialogue':
+                details = session.pending.details
+                if (motion is None or motion.text_length != len(details['text']) - details['page_start']
+                        or motion.portrait != DialoguePortrait.from_details(details, engine.character_art_variants)
+                        or (asdict(motion.relationship.change) if motion.relationship else None) != details['relationship']):
+                    raise SaveError('Dialogue animation does not match its text or portrait')
+            if (engine.word_game is not None) != bool(session.pending and session.pending.name == 'word_game'):
+                raise SaveError('Word game does not match its pending screen')
+            if (engine.word_grid is not None) != bool(session.pending and session.pending.name == 'word_grid'):
+                raise SaveError('Grid game does not match its pending screen')
+            if (engine.football is not None) != bool(session.pending and session.pending.name == 'football'):
+                raise SaveError('Football game does not match its pending screen')
+            if (engine.character_picker is not None) != bool(session.pending and session.pending.name == 'character_picker'):
+                raise SaveError('Character selection does not match its pending screen')
+            if (engine.loading is not None) != bool(session.pending and session.pending.name == 'loading'):
+                raise SaveError('Loading state does not match its pending screen')
+            session.remaining_ms = state['remaining_ms']
+            if session.remaining_ms is not None:
+                if (session.pending is None or session.pending.name != 'choice'
+                        or type(session.remaining_ms) is not int
+                        or not 0 <= session.remaining_ms <= session.pending.details['timeout_ms']):
+                    raise SaveError('Invalid saved choice timer')
+            elif session.pending and session.pending.name == 'choice' and session.pending.details['timeout_ms']:
+                raise SaveError('Timed choice is missing its remaining time')
+            session.scene_loads = _typed_value(state['scene_loads'], int)
+            if session.scene_loads < 0:
+                raise SaveError('Invalid scene transition count')
+            if (state['version'] < 3 and session.pending and session.pending.name == 'unhandled_yield'
+                    and session.pending.request.yield_id in (71, 94, 96)):
+                session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
+            if (state['version'] < 5 and session.pending and session.pending.name == 'unhandled_yield'
+                    and session.pending.request.yield_id == 78):
+                session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
+                engine.dialogue_animation = None
+            if (state['version'] < 6 and session.pending and session.pending.name == 'unhandled_yield'
+                    and session.pending.request.yield_id == 91):
+                session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
+                engine.dialogue_animation = None
+            return session
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            if isinstance(error, SaveError):
+                raise
+            raise SaveError(f'Invalid save: {error}') from error
+
+    def save(self, path: Path | None = None) -> Path:
+        if self.pending is None:
+            raise SaveError('Save requires a suspended screen or completed episode')
+        path = Path(path) if path is not None else self.save_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                             prefix='.save-', delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump(self.snapshot(), stream, ensure_ascii=False, separators=(',', ':'))
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return path
+
+    @classmethod
+    def load(cls, resources: EpisodeResources, path: Path):
+        try:
+            path = Path(path)
+            if path.stat().st_size > 8 * 1024 * 1024:
+                raise SaveError('Save exceeds supported size')
+            return cls.from_snapshot(resources, json.loads(path.read_text(encoding='utf-8')))
+        except (OSError, ValueError) as error:
+            if isinstance(error, SaveError):
+                raise
+            raise SaveError(f'Cannot load save: {error}') from error

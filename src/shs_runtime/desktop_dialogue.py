@@ -1,0 +1,151 @@
+"""Original dialogue artwork at native logical coordinates."""
+from functools import lru_cache
+
+import pygame
+
+from .content import ContentError
+from .ui_assets import ImagePack, Raster
+
+
+class DialogueRenderer:
+    def __init__(self, resources, text_renderer, image_loader):
+        self.resources = resources
+        self.text = text_renderer
+        self.image = image_loader
+        self.canvas = pygame.Surface((320, 480)).convert(32)
+        self.cached_key = None
+        self.cached_page = None
+        self.name_layer = pygame.Surface((320, 480), pygame.SRCALPHA).convert_alpha()
+
+    @lru_cache(maxsize=8)
+    def pack(self, asset_id):
+        return ImagePack.parse(self.resources.read_asset(asset_id))
+
+    @lru_cache(maxsize=64)
+    def frame(self, asset_id, index):
+        frame = self.pack(asset_id).images[index]
+        return pygame.image.frombytes(frame.pixels, (frame.width, frame.height), frame.mode).convert_alpha()
+
+    @lru_cache(maxsize=32)
+    def portrait(self, asset_id, flipped):
+        image = self.image(asset_id)
+        if image is None:
+            return None
+        raster = Raster(*image.get_size(), pygame.image.tobytes(image, 'RGBA'))
+        masked = raster.portrait_mask(self.pack(268).images[0])
+        # Match the display format after creating the masked RGBA buffer.
+        # Cocoa's opaque BGRA canvas can otherwise copy transparent RGB
+        # instead of blending it, exposing white pixels and black mask corners.
+        image = pygame.image.frombytes(masked.pixels, (masked.width, masked.height), 'RGBA').convert_alpha()
+        return pygame.transform.flip(image, flipped, False) if flipped else image
+
+    def box(self, target, rect, theme, *, alpha=255):
+        """FUN_00081920 places the eight border pieces outside the center."""
+        pack = {1: 204, 2: 220, 3: 252}.get(theme, 236)
+        x, y, width, height = rect.x, rect.y, rect.width, rect.height
+        center = self.frame(126, 0).copy()
+        center.set_alpha(alpha)
+        target.blit(pygame.transform.scale(center, (width, height)), (x, y))
+        for index, column, row in ((6, 0, 0), (7, 1, 0), (8, 2, 0), (4, 0, 1),
+                                   (5, 2, 1), (0, 0, 2), (1, 1, 2), (2, 2, 2)):
+            image = self.frame(pack, index).copy()
+            image.set_alpha(alpha)
+            w, h = image.get_size()
+            size = (width if column == 1 else w, height if row == 1 else h)
+            position = (x - w if column == 0 else x + width if column == 2 else x,
+                        y - h if row == 0 else y + height if row == 2 else y)
+            target.blit(pygame.transform.scale(image, size), position)
+
+    @lru_cache(maxsize=32)
+    def portrait_group(self, portrait):
+        """The art and both rings are children of the native scaled node."""
+        rings = [self.frame(126, index)
+                 for index in (37, {1: 38, 2: 39}.get(portrait.theme, 40))]
+        image = self.portrait(portrait.asset_id, portrait.mode == 2 and portrait.theme != 3)
+        pieces = [(ring, ring.get_rect(center=(0, 0))) for ring in rings]
+        if image is not None:
+            bottom = self.frame(126, 39).get_height() // 2
+            pieces.append((image, image.get_rect(midbottom=(0, bottom))))
+        bounds = pieces[0][1].unionall([rect for _, rect in pieces[1:]])
+        layer = pygame.Surface(bounds.size, pygame.SRCALPHA).convert_alpha()
+        for piece, rect in pieces:
+            layer.blit(piece, rect.move(-bounds.x, -bounds.y))
+        return layer, bounds.topleft
+
+    def draw_portrait(self, portrait, scale):
+        if portrait is None or scale <= 0:
+            return
+        rect = self.resources.dialogue_layout().bank.rectangle(17, 0x30 if portrait.mode == 1 else 0x4e)
+        cx, cy = rect.center
+        cy -= 5  # FUN_000aaa40 uses 485-y when converting to GL.
+        layer, (x, y) = self.portrait_group(portrait)
+        if scale != 1:
+            size = max(1, round(layer.get_width() * scale)), max(1, round(layer.get_height() * scale))
+            layer = pygame.transform.smoothscale(layer, size)
+        self.canvas.blit(layer, (round(cx + x * scale), round(cy + y * scale)))
+
+    def draw_relationship(self, motion):
+        if motion.relationship is None or motion.portrait is None:
+            return
+        rect = self.resources.dialogue_layout().bank.rectangle(17, 0x30 if motion.portrait.mode == 1 else 0x4e)
+        cx, cy = rect.center
+        cy -= 5
+        # Indicator parents are siblings of the head's scaled node. They
+        # appear after its entrance and do not inherit the head-only flip.
+        for pose in motion.relationship.poses():
+            icon = self.image(pose.asset_id)
+            if icon is None:
+                continue
+            image = pygame.transform.rotozoom(icon, -pose.rotation, 1)
+            center = round(cx + pose.x), round(cy + pose.y)
+            self.canvas.blit(image, image.get_rect(center=center))
+            if pose.flash_alpha:
+                flash = self.image(pose.flash_asset)
+                if flash is not None:
+                    flash = pygame.transform.rotozoom(flash, -pose.rotation, pose.flash_scale)
+                    flash.set_alpha(pose.flash_alpha)
+                    self.canvas.blit(flash, flash.get_rect(center=center))
+
+    def draw(self, target, session):
+        details = session.pending.details
+        key = id(session), session.scene, session.vm.steps_executed, details['page_start']
+        if key != self.cached_key:
+            self.cached_page = session.dialogue_page()
+            self.cached_key = key
+            self.name_layer.fill((0, 0, 0, 0))
+            if self.cached_page is not None:
+                page = self.cached_page
+                self.text.draw_layout(self.name_layer, page.name_font, page.name,
+                                      *page.name_origin, scale=page.name_scale)
+        page = self.cached_page
+        if page is None:
+            raise ContentError('Dialogue requires the imported APK layout and fonts')
+        self.canvas.fill((0, 0, 0))
+        background = self.image(session.engine.panel.background_id)
+        if background is not None:
+            # FUN_000a92f4: unscaled image centered at GL (160,300).
+            self.canvas.blit(background, (160 - background.get_width() // 2,
+                                          180 - background.get_height() // 2))
+        motion = session.engine.dialogue_animation
+        angle = motion.box_rotation
+        if angle:
+            from .ui_assets import Rect
+            box = page.box
+            layer = pygame.Surface((box.width + 20, box.height + 20), pygame.SRCALPHA).convert_alpha()
+            self.box(layer, Rect(10, 10, box.width, box.height), details['theme'])
+            layer = pygame.transform.rotate(layer, -angle)
+            self.canvas.blit(layer, layer.get_rect(center=box.center))
+        else:
+            self.box(self.canvas, page.box, details['theme'])
+        self.draw_portrait(motion.previous, motion.previous_scale)
+        self.draw_portrait(motion.portrait, motion.portrait_scale)
+        self.draw_relationship(motion)
+        self.text.draw_layout(self.canvas, page.body_font, page.body, *page.body_origin,
+                              source_end=motion.revealed)
+        self.name_layer.set_alpha(motion.name_alpha)
+        self.canvas.blit(self.name_layer, (0, 0))
+        # Layout 18's footer. Runtime save/load affordances remain host UI
+        # until the original menu callbacks are implemented.
+        self.canvas.blit(self.frame(126, 47), (0, 431))
+        target.blit(pygame.transform.smoothscale(self.canvas, target.get_size()), (0, 0))
+        return page

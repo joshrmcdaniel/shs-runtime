@@ -1,0 +1,13 @@
+# Publish authored code and specifications only. Original game files,
+# native decompilations, generated traces, libraries and saves stay local.
+global-exclude *
+include LICENSE README.md AGENTS.md pyproject.toml uv.lock MANIFEST.in .gitignore
+recursive-include src/shs_runtime *.py
+recursive-include tests test_*.py
+include SCHEMA.md VM_SPEC.md
+include docs/DISTRIBUTION.md docs/DEVELOPMENT.md docs/PROVENANCE.md
+include docs/ENGINE_ABI.md docs/RUNTIME.md docs/VM_EXECUTION.md
+include docs/UI_FIDELITY.md docs/UI_ASSETS.md docs/MINIGAMES.md
+include docs/MAIN_MENU.md docs/STORY_SERVICES.md docs/EPISODE_CATALOG.md
+include tools/build_desktop.py tools/audit_format.py tools/audit_vm.py
+include tools/audit_runtime.py tools/audit_ui_assets.py

@@ -1,0 +1,164 @@
+# Episode catalog and category sections
+
+Reference: Android 1.0.9 `libshs09.so`, SHA-256
+`b17aa4c71bc46666d414cafae6fac92bbcd755f3dcccd73975cf05f4a119665b`.
+The locally supplied `Episodes/shs_options.sav` supplies additional original
+catalog evidence. It is user content and is excluded from distributions.
+
+## Native list behavior
+
+`FUN_00078714` sorts downloaded records by the packed numeric key returned by
+`FUN_0009794c`: `(signed16(pack_id) << 16) | signed16(episode_id)`. The first
+two built-in entries are handled separately. `FUN_00078910` gets each record's
+**category string** through `FUN_00097ea0` and inserts a header when that string
+changes. The category pointer is at record `+0x2c`; the English episode title
+is a separate pointer at `+0x18`, returned by `FUN_00097ecc`.
+
+Consequently, `pack_id / 100` is not a reliable season name. In the original
+catalog, pack 301 includes episodes under both Season 3 and Season 4. The
+later A New Start and Troublemakers groups span several pack IDs. EXP resource
+1 contains five localized **episode titles**, not these category names.
+
+`FUN_0009b220` obtains the category from a download archive's `contents.bin`
+(`DownloadContents` signature), passes it to `FUN_00097f24`, and attaches that
+category to its episode records. `FUN_0009795c` serializes these records to the
+native options save; `FUN_000980e4` reads them back. The Android reader consumes
+all translations but its constructor currently retains the English title and
+category for all locales.
+
+`FUN_00078dd8` begins the built-in story section using APK string 82, Mega
+Packs. `FUN_00079428` inserts string 238, My Saved Games, before saved episode
+shortcuts. Built-in creation functions `0008d334`, `00092318`, and `000924b8`
+assign Mega Packs to Football Star, the bundled Season 1 story, and The New
+Girl. `00092170` assigns the novel bonus story APK string 302. These native
+catalog IDs can differ from the IDs embedded in the corresponding EXP.
+
+Headers use APK image pack 16, frame 76 (296 × 12), and font registry 2
+(`ArialRoundedMTBold11`). Episode rows use alternating frames 82/83, pressed
+frame 84 (all 296 × 42), with the existing play/resume icons.
+
+The store list is a different path: `FUN_00070984` interprets
+`EPISODE_LISTING_START/END` and `Orange Header:` / `Blue Header:` lines from
+server configuration. Those store/purchase services remain outside the local
+runtime.
+
+## Native options wire schema
+
+The supported catalog reader validates the entire following envelope. Numeric
+fields below are big endian unless explicitly marked as uninterpreted bytes.
+It accepts versions 16–18; later versions are rejected.
+
+```text
+OptionsCatalog :=
+    signature       : bytes[12] = "SHS_OPTIONS\0"
+    version         : s32 = 16 | 17 | 18
+    ignored_header  : bytes[16 | 20]
+    current_episode : OptionalCatalogEntry
+    entry_count     : s32, 0..4096
+    entries         : OptionalCatalogEntry[entry_count]
+    pair_count      : s16, 0..4096
+    ignored_pairs   : (String, String)[pair_count]
+    if version >= 17:
+        ignored_flag_17 : u8 = 0 | 1
+    if version >= 18:
+        ignored_flag_18 : u8 = 0 | 1
+    EOF
+
+OptionalCatalogEntry :=
+    present         : u8 = 0 | 1
+    if present:
+        pack_id     : u16
+        episode_id  : u16
+        titles      : String[5]
+        categories  : String[5]
+        filename    : String
+        download_id : s32
+
+String :=
+    byte_length     : u16, 0..32767
+    bytes           : bytes[byte_length], no NUL
+```
+
+The Android `FUN_00092734` reader puts the current episode at byte 36. Its
+ignored header comprises a discarded s32, four flag bytes, two native raw
+four-byte values (`FUN_0004a568`), and four more flag bytes. The supplied
+version-18 legacy file instead puts the current episode at byte 32. The
+runtime tries these two fixed layouts and accepts exactly one that validates
+all records, string pairs, versioned flags, and EOF. This difference is
+recorded as a legacy envelope variant; it is not evidence that the platform
+save formats are identical. Versions 16/17 and the 36-byte envelope have
+authored test coverage; the original supplied file verifies version 18 and
+the 32-byte envelope.
+
+Most strings decode as UTF-8. Some translated strings in the original options
+file contain legacy byte values, so this reader falls back to Latin-1 for
+those strings. This compatibility rule does not relax the strict UTF-8
+validation of EXP metadata. The runtime currently uses English title/category
+only. The file is limited to 4 MiB.
+
+The supplied file contains 277 serialized list entries, plus a current-entry
+record. Deduplication leaves 274 catalog records. Filename or exact
+`(pack_id, episode_id, English title)` matching categorizes all 272 currently
+installed EXPs into 28 original groups. This establishes catalog coverage,
+not full-story execution coverage.
+
+## Local import and persistence
+
+Adding an episode folder also reads its `shs_options.sav`, when present.
+Selecting an individual EXP discovers a sibling sidecar. A catalog can also
+be added explicitly through the episode file picker, drag/drop, or
+`ContentLibrary.add_episodes([path])` without adding any new EXPs. The sidecar
+is optional; APK and EXP inputs remain sufficient to play.
+
+Only normalized catalog metadata is retained in the library. The native
+options file, user strings, flags, and native progress are not copied or
+applied. Optional `library.json` field:
+
+```text
+episode_catalog : CatalogEntry[], maximum 4096
+CatalogEntry := {
+    pack_id: u16,
+    episode_id: u16,
+    title: string,
+    category: string,
+    filename: string
+}
+```
+
+Filenames are normalized to a case-insensitive basename and are only lookup
+keys. No catalog path is opened. A matching filename handles native synthetic
+IDs; an exact ID/title match handles renamed EXPs. Conflicting category matches
+remain unknown. New catalog records replace the same ID/title/filename key;
+unrelated entries remain available for episodes imported later.
+
+Catalog and episode changes publish together by the existing atomic manifest
+replacement. Invalid catalogs or EXPs abort the whole batch. Catalog-only
+updates return zero newly added episodes. Category changes do not change the
+APK/EXP content identities, save names, preferences, or saved progress. No
+catalog or copied game titles are embedded in the executable.
+
+## Desktop browser contract
+
+The desktop consolidates each category into one section, retaining its original
+name. Mega Packs comes first; other groups are ordered by their minimum numeric
+pack/episode key. The saved-game shortcuts precede these groups in Play/Resume.
+Unknown loose episodes get an explicit numeric `Pack N` section; the runtime
+does not invent a season label. Known bundled stories can use the categories
+read from APK strings even without an options sidecar.
+
+Collapsible headers, counts, 24px header hit areas, and Expand/Collapse All are
+desktop browsing additions. The original 12px header artwork is unscaled and
+centered within that hit area. Saved games start expanded; category sections
+start collapsed. These fold states are view state, not episode visibility or
+save state. Every installed episode remains present and searchable.
+
+Search matches titles, filenames, aliases, and original category names. Search
+results expand matching sections temporarily, without changing fold state.
+Episode/title ordering applies within each section. Returning from an episode
+detail screen restores the list's scroll and folds. Episode totals count unique
+installed records, not duplicated saved-game shortcuts.
+
+Tests cover both validated envelopes, truncation and corrupt counts/strings,
+native alias IDs, ambiguous categories, atomic catalog/EXP imports, persistence,
+original corpus coverage, category-based season boundaries, collapsible search,
+scrolled/resized pointer targets, and navigation back to the same list position.

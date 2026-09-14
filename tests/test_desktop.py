@@ -1,0 +1,220 @@
+import importlib.util
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+
+from shs_runtime.runtime import Session
+from test_runtime import Resources, answer_screen, branching_program
+
+
+@unittest.skipUnless(importlib.util.find_spec('pygame'), 'desktop extra is not installed')
+class DesktopTests(unittest.TestCase):
+    @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user library is not present')
+    def test_dialogue_motion_renders_between_states_and_pauses_without_advancing_vm(self):
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.content import ContentLibrary
+        from shs_runtime.desktop import Desktop
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        with ContentLibrary(Path('.shs-library')) as library:
+            resources = library.open_episode('The_New_Girl.exp')
+            ui = Desktop(Session(resources), audio=False)
+            for _ in range(100):
+                if (ui.session.pending.name == 'dialogue'
+                        and ui.session.engine.dialogue_animation.portrait is not None):
+                    break
+                answer_screen(ui.session)
+            else:
+                self.fail('Expected a portrait in the opening scene')
+            session = ui.session
+            before_vm = session.vm.snapshot()
+            ui.tick(250)
+            frames = set()
+            for _ in range(19):
+                ui.render()
+                self.assertIsNone(ui.error)
+                frames.add(pygame.image.tobytes(ui.canvas, 'RGB'))
+                ui.tick(16)
+            self.assertGreaterEqual(len(frames), 15)
+            self.assertEqual(session.vm.snapshot(), before_vm)
+            saved = session.snapshot()
+            ui.render()
+            pixels = pygame.image.tobytes(ui.canvas, 'RGB')
+            self.assertEqual(session.snapshot(), saved)  # Drawing never advances clocks.
+            ui.session = Session.from_snapshot(resources, saved)
+            ui.render()
+            self.assertEqual(pygame.image.tobytes(ui.canvas, 'RGB'), pixels)
+            ui.command(('menu',)); ui.tick(2000)
+            self.assertEqual(ui.session.snapshot(), saved)
+            ui.command(('resume',))
+            ui.handle_event(pygame.event.Event(pygame.WINDOWFOCUSLOST)); ui.tick(2000)
+            self.assertEqual(ui.session.snapshot(), saved)
+            ui.handle_event(pygame.event.Event(pygame.WINDOWFOCUSGAINED))
+            ui.render()
+            token = ui._screen_token()
+            for _ in range(2):
+                ui.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE))
+            self.assertNotEqual(ui._screen_token(), token)
+            self.assertEqual(ui.session.vm.snapshot(), before_vm)
+            ui.tick(1000)
+            ui.render()
+            self.assertIsNone(ui.error)
+            self.assertNotEqual(pygame.image.tobytes(ui.canvas, 'RGB'), pixels)
+            self.assertTrue(ui.session.engine.dialogue_animation.complete)
+            self.assertEqual(ui.session.vm.snapshot(), before_vm)
+
+    @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user library is not present')
+    def test_minigame_input_pause_and_original_art(self):
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.content import ContentLibrary
+        from shs_runtime.desktop import Desktop
+        from test_football import resources as football_resources, start_play
+        from test_word_grid import resources as grid_resources, play_phase
+        from test_minigames import word_resources
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        with ContentLibrary(Path('.shs-library')) as library:
+            r = library.open_episode('The_New_Girl.exp')
+            for fixture in (word_resources(), grid_resources(tutorial=True), football_resources(100)):
+                r.programs[25001] = fixture.program(25001)
+                ui = Desktop(Session(r), audio=False)
+                s = ui.session
+                if s.engine.word_grid:
+                    play_phase(s)
+                elif s.engine.football:
+                    start_play(s)
+                    for _ in range(5): ui.tick(250)
+                else:
+                    ui.tick(400)
+                ui.window = pygame.display.set_mode((800, 600), pygame.RESIZABLE)
+                ui.render(); self.assertIsNone(ui.error)
+                saved = s.snapshot()
+                ui.command(('menu',)); ui.tick(1000)
+                self.assertEqual(s.snapshot(), saved)
+                ui.command(('resume',))
+                ui.handle_event(pygame.event.Event(pygame.WINDOWFOCUSLOST)); ui.tick(1000)
+                self.assertEqual(s.snapshot(), saved)
+                ui.handle_event(pygame.event.Event(pygame.WINDOWFOCUSGAINED))
+
+                def pointer(kind, point):
+                    x, y = point
+                    pos = (ui.viewport.x + x * ui.viewport.width / 320,
+                           ui.viewport.y + y * ui.viewport.height / 480)
+                    ui.handle_event(pygame.event.Event(kind, button=1, pos=pos))
+
+                if s.engine.word_grid:
+                    for kind, index in [(pygame.MOUSEBUTTONDOWN, 0), (pygame.MOUSEMOTION, 1),
+                                        (pygame.MOUSEMOTION, 2)]:
+                        pointer(kind, ui.grid_renderer.cells[index][1].center)
+                    self.assertEqual(s.engine.word_grid.score, 100)
+                    pointer(pygame.MOUSEBUTTONUP, (0, 0))
+                elif s.engine.football:
+                    game = s.engine.football
+                    self.assertTrue(game.targets[0].visible)
+                    pointer(pygame.MOUSEBUTTONDOWN, (60, 200))
+                    self.assertEqual(game.phase, 4)
+                    self.assertEqual(game.down, 1)
+                else:
+                    page = ui.choice_renderer.page(s)
+                    row = page.rows[s.engine.word_game.weights.index(1)]
+                    pointer(pygame.MOUSEBUTTONDOWN, row.rect.center)
+                    self.assertEqual(s.engine.word_game.score, 1)
+                ui.render(); self.assertIsNone(ui.error)
+
+    def test_masked_portraits_blend_on_opaque_cocoa_surface(self):
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.desktop_dialogue import DialogueRenderer
+        from shs_runtime.ui_assets import Raster
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        pygame.display.init()
+        pygame.display.set_mode((4, 1))
+        # Transparent white, real black artwork, a translucent edge, and a
+        # colored pixel that the portrait mask turns into transparent black.
+        pixels = bytes((255, 255, 255, 0, 0, 0, 0, 255,
+                        50, 80, 110, 128, 90, 200, 15, 255))
+        source = pygame.image.frombytes(pixels, (4, 1), 'RGBA')
+        renderer = DialogueRenderer(None, None, lambda _: source)
+        renderer.pack = lambda _: SimpleNamespace(images=(Raster(4, 1, b'\0\0\0\xff', 'A'),))
+        expected = [(120, 150, 180), (0, 0, 0), (85, 115, 145), (120, 150, 180)]
+        for alpha_mask in (0, 0xff000000):
+            for flipped in (False, True):
+                with self.subTest(alpha_mask=alpha_mask, flipped=flipped):
+                    # Cocoa's opaque canvas retains an alpha bitmask with
+                    # zero alpha bytes, despite not having the SRCALPHA flag.
+                    target = pygame.Surface((4, 1), 0, 32,
+                                            (0xff0000, 0xff00, 0xff, alpha_mask))
+                    target.fill((120, 150, 180, 0))
+                    target.blit(renderer.portrait(1, flipped), (0, 0))
+                    self.assertEqual([tuple(target.get_at((x, 0))[:3]) for x in range(4)],
+                                     expected[::-1] if flipped else expected)
+
+    def test_window_input_save_load_and_resized_mouse_coordinates(self):
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.desktop import Desktop
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        with tempfile.TemporaryDirectory() as temporary:
+            resources = Resources(branching_program())
+            resources.library.directory = Path(temporary)
+            ui = Desktop(Session(resources), audio=False)
+            ui.render()
+            saved = ui.session.snapshot()
+            ui.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN))
+            self.assertEqual(ui.session.snapshot(), saved)  # Enter cannot invent a choice.
+            ui.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F5))
+            self.assertTrue(ui.session.save_path.exists())
+            ui.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_2))
+            self.assertEqual(ui.session.pending.details['text'], 'Went right.')
+            ui.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F9))
+            self.assertEqual(ui.session.snapshot(), saved)
+            ui.window = pygame.display.set_mode((800, 600), pygame.RESIZABLE)
+            ui.render()
+            rect = next(rect for rect, command in ui.buttons if command == ('choose', 0))
+            x = ui.viewport.x + rect.centerx * ui.viewport.width / 480
+            y = ui.viewport.y + rect.centery * ui.viewport.height / 720
+            ui.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(x, y)))
+            self.assertEqual(ui.session.pending.details['text'], 'Went left.')
+            self.assertIsNone(ui.error)
+            self.assertFalse(ui.handle_event(pygame.event.Event(pygame.QUIT)))
+
+    @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user library is not present')
+    def test_original_dialogue_fonts_on_opening_and_saved_choice_branches(self):
+        os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.content import ContentLibrary
+        from shs_runtime.desktop import Desktop
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        with ContentLibrary(Path('.shs-library')) as library:
+            resources = library.open_episode('The_New_Girl.exp')
+            ui = Desktop(Session(resources), audio=False)
+            screens = 0
+            while ui.session.pending.name in ('presentation', 'dialogue') and screens < 100:
+                ui.render()
+                self.assertIsNone(ui.error)
+                answer_screen(ui.session)
+                screens += 1
+            self.assertEqual(screens, 35)
+            self.assertEqual(ui.session.pending.name, 'choice')
+            saved = ui.session.snapshot()
+            for choice in (0, 1):
+                ui.session = Session.from_snapshot(resources, saved)
+                ui.session.answer(choice)
+                ui.render()
+                self.assertIsNone(ui.error)
+                self.assertEqual(ui.session.pending.name, 'dialogue')
+            self.assertIn('ArialRoundedMTBold16', ui.story_text.fonts)
+            self.assertIn('TrebuchetMS_Italic16', ui.story_text.fonts)
+            self.assertTrue(any(name.startswith('PajamaHip') for name in ui.story_text.fonts))
