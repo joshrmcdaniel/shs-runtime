@@ -566,16 +566,19 @@ Timed word choices reuse the theme's original panel, masked portrait and
 37-pixel minimum rows. They include the native timer/score art and a 200 ms
 label transition. Word/picture grids use atlas 446's colored tiles/arrows,
 522/523's blue glyphs, episode-supplied symbols/backgrounds and the recovered
-tilted-board projection. Football uses atlas 290's nested field markings,
+tilted-board projection. Their native white/orange CS fonts, measured tutorial
+panels, portraits, time/score HUD, cloud borders, prompts and banner movement
+are specified in [GRID_UI.md](GRID_UI.md). Football uses atlas 290's nested field markings,
 turf, changing play symbols, coach art and fixed nine-target input bounds.
 No artwork is embedded in the implementation.
 
 These paths still need visual comparison with original recordings. Football
-uses simplified camera motion, banners and localized team labels. Grid header
-fonts, character placement, tutorial placement, tile flips, outgoing-board
-timing and some overlay boundaries remain approximate. Fast grid pointer
-motion does not interpolate skipped cells. Service 88 notices have the native
-length-based lifetime but simplified letter animation/placement. See the
+uses simplified camera motion, banners and localized team labels. Grid tile
+side faces, highlights, particles, ring pulses, flying score deltas, outgoing-board
+generation timing and some overlay boundaries remain approximate. Fast grid pointer
+motion does not interpolate skipped cells. Service 88 notices now use the
+original font, portrait-relative placement, rising letters, fade and input
+lifecycle, specified in [STORY_SERVICES.md](STORY_SERVICES.md#dialogue-notifications-service-88). See the
 mini-game spec's verification boundary before treating a successful render or
 unit test as proof of complete original behavior.
 

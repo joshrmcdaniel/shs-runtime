@@ -9,6 +9,19 @@ are listed under Unreleased.
 
 - Relationship indicators now read the correct NPC property, so script changes
   update the icons and count, including Adam's four skulls in Football Star.
+- Implemented service 39's dialogue panel cleanup, fixing the Football Star
+  stop at scene 25013, PC 13. Saves paused there resume from their existing state.
+- Fixed Football Star's word-grid tutorial initialization by matching the
+  native word-list parser and accepting instruction pages with no targets and
+  unused failure links. Playable-grid validation remains enforced.
+- Restored the word-grid UI's original bitmap fonts, tutorial panels, portrait
+  placement, time/score display, cloud borders and word prompts. Added native
+  banner and panel motion, outgoing tile faces, and corrected hint/trace art.
+  Save version 7 retains these animations and reads earlier saves.
+- Restored Strength Up and other service-88 notifications with the original
+  lettering, portrait-relative placement, rising letters and fade. Corrected
+  their lifetime and dismissal on dialogue taps. The fix applies across
+  episodes, and existing saves retain their remaining notice time.
 
 ## v0.1.0
 

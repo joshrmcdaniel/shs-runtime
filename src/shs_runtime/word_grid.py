@@ -7,11 +7,26 @@ Evidence, record schemas, and presentation limits: docs/MINIGAMES.md.
 from dataclasses import dataclass, field
 from collections import Counter
 
-from .minigames import pipe_list
-
-
 NEIGHBORS = ((0, 1), (0, -1), (1, 1), (1, 0), (1, -1),
              (-1, 1), (-1, 0), (-1, -1))
+WORD_TRIM = ''.join(chr(c) for c in range(0x21))
+
+
+def grid_words(text):
+    """000cccd0/0005f838: trim byte values <= 32 and omit empty fields."""
+    words, start = [], 0
+    while True:
+        end = text.find('|', start)
+        if end == -1:
+            end = len(text)
+        word = text[start:end].strip(WORD_TRIM)
+        if word:
+            words.append(word)
+        start = end + 1
+        # The native splitter stops after a delimiter when at most one byte
+        # remains. A one-byte word without a preceding delimiter is retained.
+        if start >= len(text) - 1:
+            return words
 
 
 @dataclass
@@ -40,10 +55,13 @@ class GridProblem:
 
     def validate(self):
         if (not 1 <= self.width <= 5 or not 1 <= self.height <= 5
-                or not self.words or len(self.words) > 256
+                or len(self.words) > 256
                 or any(not w or len(w) > self.width * self.height for w in self.words)
                 or not 1 <= self.minimum_starts <= self.width * self.height):
             raise ValueError('Invalid grid dimensions, words, or minimum start count')
+        if not self.words and not (self.fixed_board is not None and self.tap_to_advance
+                                   and not self.timed_tutorial):
+            raise ValueError('Playable grids require at least one target word')
         if self.fixed_board is None:
             if self.width * self.height < 2 or not self.alphabet:
                 raise ValueError('Generated grid needs an alphabet and at least two cells')
@@ -51,6 +69,23 @@ class GridProblem:
                 raise ValueError('Grid alphabet cannot form its target words')
         elif len(self.fixed_board) < self.height * (self.width + 1) - 1:
             raise ValueError('Truncated tutorial grid')
+
+
+@dataclass
+class GridBanner:
+    kind: str
+    enter_ms: int
+    hold_ms: int
+    age_ms: int = 0
+
+
+@dataclass
+class GridTransition:
+    problem: GridProblem
+    board: list[str]
+    starts: list[int]
+    tutorial: bool
+    mode: str = 'replace'
 
 
 @dataclass
@@ -91,6 +126,10 @@ class WordGrid:
     error_sound_ms: int = 0
     last_delta: int = 0
     delta_ms: int = 0
+    visual_ms: int = 0
+    board_entry_ms: int = 0
+    banner: GridBanner | None = None
+    transition: GridTransition | None = None
 
     @property
     def problem(self):
@@ -284,14 +323,19 @@ class WordGrid:
             self.selection, self.bad_prefix, self.dragging = [], [], False
 
     def complete_round(self, success, random):
+        self.transition = None
         self.round_success = success
         self.dragging = False
         if self.feedback:
             self.phase, self.phase_ms = 3, 1100
+            # 000d02c4 suppresses the success banner during instruction pages.
+            self.banner = (None if self.tutorial and success else
+                           GridBanner('success' if success else 'failure', 1300, 700))
         else:
             self.next_problem(random)
 
     def next_problem(self, random):
+        self.transition = GridTransition(self.problem, self.board.copy(), self.starts.copy(), self.tutorial)
         if self.tutorial:
             index = self.problem.success_next if self.round_success else self.problem.failure_next
             if index == -2:
@@ -312,11 +356,21 @@ class WordGrid:
         self.problem_index = index
         self.phase, self.phase_ms = 4, 800
         self.load_board(random)
-        self.tutorial_entry_ms = 500
+        if self.problem.animate_board:
+            old = self.transition.problem
+            self.transition.mode = ('flip' if (old.width, old.height) == (self.problem.width, self.problem.height)
+                                    and not old.hide_board and not self.switching_to_game else 'shrink')
 
     def tick(self, elapsed_ms, random):
         # Each native grid update caps dt at 250 ms, including after a stall.
         dt = min(elapsed_ms, 250)
+        self.visual_ms += dt
+        if self.phase in (2, 6):
+            self.board_entry_ms = min(2000, self.board_entry_ms + dt)
+        if self.banner is not None:
+            self.banner.age_ms += dt
+            if self.banner.age_ms > self.banner.enter_ms + self.banner.hold_ms:
+                self.banner = None
         self.error_sound_ms = max(0, self.error_sound_ms - dt)
         self.delta_ms = max(0, self.delta_ms - dt)
         self.tutorial_entry_ms = max(0, self.tutorial_entry_ms - dt)
@@ -330,6 +384,7 @@ class WordGrid:
             if self.remaining_ms <= 0:
                 self.phase, self.phase_ms = 5, 4200
                 self.overlay_ms = 2600
+                self.banner = GridBanner('time_up', 1600, 1000)
                 self.sound(8113)
                 self.dragging, self.selection, self.bad_prefix = False, [], []
         else:
@@ -337,19 +392,28 @@ class WordGrid:
             if self.phase == 5:
                 if not self.result_shown and self.phase_ms <= 2600 and not self.overlay_ms:
                     self.result_shown, self.overlay_ms = True, 4600
+                    self.banner = GridBanner('result', 2600, 2000)
                 elif self.phase_ms <= 0 and not self.overlay_ms:
                     self.phase, self.phase_ms = 7, 960
             elif self.phase_ms <= 0:
                 if self.phase == -2:
                     self.phase, self.phase_ms = -1, 1500
+                    self.banner = GridBanner('ready', 700, 800)
                 elif self.phase == -1:
                     self.phase, self.phase_ms = (0, 2800) if self.tutorial else (6, 1600)
+                    if not self.tutorial:
+                        self.banner = GridBanner('target', 700, 1300)
                 elif self.phase in (0, 2):
                     self.phase, self.phase_ms = 1, 0
+                    self.transition = None
                 elif self.phase == 3:
                     self.next_problem(random)
                 elif self.phase == 4:
                     self.phase, self.phase_ms = (6, 1600) if self.switching_to_game else (2, 1800)
+                    self.board_entry_ms = 0
+                    self.tutorial_entry_ms = 500
+                    if self.switching_to_game:
+                        self.banner = GridBanner('target', 700, 1300)
                     self.switching_to_game = False
                 elif self.phase == 6:
                     self.phase, self.phase_ms = 2, 1800
@@ -369,7 +433,9 @@ class WordGrid:
         for p in self.problems + self.tutorials:
             p.validate()
         for p in self.tutorials:
-            if any(n != -2 and not 0 <= n < len(self.tutorials) for n in (p.success_next, p.failure_next)):
+            valid = lambda n: n == -2 or 0 <= n < len(self.tutorials)
+            if (not valid(p.success_next) or not (valid(p.failure_next)
+                    or p.failure_next == -1 and not p.timed_tutorial)):
                 raise ValueError('Invalid tutorial transition')
         if any(not 0 <= c <= 255 or not 0 <= asset <= 65535 for c, asset in self.symbols.items()):
             raise ValueError('Invalid grid symbol map')
@@ -379,6 +445,28 @@ class WordGrid:
         if (sorted(self.order) != list(range(len(self.problems)))
                 or not 0 <= self.problem_index < (len(self.tutorials) if self.tutorial else len(self.problems))):
             raise ValueError('Invalid grid problem order')
+        if (not 0 <= self.visual_ms <= 2**53 or not 0 <= self.tutorial_entry_ms <= 3700
+                or not 0 <= self.board_entry_ms <= 2000
+                or not 0 <= self.delta_ms <= 600):
+            raise ValueError('Invalid grid presentation clock')
+        if self.banner is not None:
+            b = self.banner
+            timings = dict(ready=(700, 800), target=(700, 1300), success=(1300, 700),
+                           failure=(1300, 700), time_up=(1600, 1000), result=(2600, 2000))
+            if (timings.get(b.kind) != (b.enter_ms, b.hold_ms)
+                    or not 0 <= b.age_ms <= b.enter_ms + b.hold_ms):
+                raise ValueError('Invalid grid banner')
+        if self.transition is not None:
+            t = self.transition
+            t.problem.validate()
+            if (self.phase not in (2, 4, 6) or t.mode not in ('replace', 'flip', 'shrink')
+                    or len(t.board) != t.problem.width * t.problem.height
+                    or any(len(c) != 1 for c in t.board)
+                    or len(t.starts) != len(set(t.starts))
+                    or any(not 0 <= i < len(t.board) for i in t.starts)
+                    or t.mode == 'flip' and (t.problem.width, t.problem.height) !=
+                    (self.problem.width, self.problem.height)):
+                raise ValueError('Invalid departing grid')
         p = self.problem
         if (len(self.board) != p.width * p.height or any(len(c) != 1 for c in self.board)
                 or len(self.starts) != len(set(self.starts))
@@ -413,7 +501,7 @@ def read_grid(vm, args, read_text, resolve_text, *, tutorials_seen=False):
     for a in rows(args[11], args[12], 10):
         # Native 9f378 is substituted text; fixed board bytes use 9f258.
         problems.append(GridProblem(a[0], a[1], resolve_text(a[2]), resolve_text(a[3]),
-                                    pipe_list(resolve_text(a[4])), resolve_text(a[5]),
+                                    grid_words(resolve_text(a[4])), resolve_text(a[5]),
                                     a[6] == 1, a[7] == 1, a[8], 1001 if a[9] == -1 else a[9]))
         # The shipped dispatcher ends the problem loop at this alphabet.
         if problems[-1].alphabet == 'inspirem':
@@ -424,7 +512,7 @@ def read_grid(vm, args, read_text, resolve_text, *, tutorials_seen=False):
             title, text = (resolve_text(i) if i >= 0 else '' for i in a[:2])
             tutorials.append(GridProblem(
                 a[5], a[6], resolve_text(a[7]), resolve_text(a[8]),
-                pipe_list(resolve_text(a[9])), '', a[10] == 1, False, 1, 1000,
+                grid_words(resolve_text(a[9])), '', a[10] == 1, False, 1, 1000,
                 read_text(a[11]), a[12] == 1, a[13] == 1, a[14] == 1, a[16], a[15],
                 title if text else '', text, a[2] if text else 0,
                 bool(text) and a[3] == 1, bool(text) and a[4] == 1))

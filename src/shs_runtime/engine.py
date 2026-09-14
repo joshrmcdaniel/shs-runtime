@@ -15,6 +15,7 @@ from .scene_badge import SceneBadge
 from .loading import LoadingScreen
 from .relationships import RelationshipChange
 from .dialogue_animation import DialogueAnimation
+from .dialogue_notice import notice_lifetime
 from .vm import KiwiVM, StopKind, VMError, VMStop, signed16
 
 
@@ -112,9 +113,7 @@ class EngineState:
         self.panel.presentation_mode, self.panel.theme = presentation, theme
         if self.next_dialogue_notice:
             self.notice, self.next_dialogue_notice = self.next_dialogue_notice, ''
-            # 0009c814 schedules the exit at length * .03 * 5.5 seconds;
-            # 0009c750 then fades/moves the notice for another 300 ms.
-            self.notice_ms = len(self.notice) * 165 + 300
+            self.notice_ms = notice_lifetime(self.notice)
         wobble, self.next_dialogue_wobble = self.next_dialogue_wobble, False
         relationship = self.prepare_relationship(visible if presentation in (1, 2) else -1, settled=settled_relationship)
         return dict(text=text, raw_text=raw_text, character_id=character,
@@ -325,6 +324,13 @@ class EngineState:
             byte = args[1] & 255
             self.character_expressions[args[0]] = byte - 256 if byte > 127 else byte
             return complete('set_character_expression')
+        if y == 39:
+            # FUN_000a7cd0 marks panel 3 for removal; no arguments are read
+            # and no UI callback is requested. Retire its presentation state.
+            self.panel = PanelState()
+            self.dialogue_animation = None
+            self.next_dialogue_notice, self.notice, self.notice_ms = '', '', 0
+            return complete('close_dialogue_panel')
         if y in (11, 34, 35, 86):
             at_least(4 if y == 35 else 3 if y == 86 else 2)
             base, variant = (args[2], args[1]) if y == 35 else ((args[0], args[1]) if y == 86 else (args[1], args[0]))

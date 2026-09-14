@@ -4,6 +4,7 @@ from functools import lru_cache
 import pygame
 
 from .content import ContentError
+from .dialogue_notice import NOTICE_FONT, NOTICE_STYLE, NoticeMotion
 from .ui_assets import ImagePack, Raster
 
 
@@ -106,6 +107,26 @@ class DialogueRenderer:
                     flash.set_alpha(pose.flash_alpha)
                     self.canvas.blit(flash, flash.get_rect(center=center))
 
+    def draw_notice(self, engine):
+        portrait = engine.dialogue_animation.portrait
+        # This label belongs to the current portrait parent, which the native
+        # panel hides for narration and dialogue without character artwork.
+        if not engine.notice_ms or portrait is None:
+            return
+        motion = NoticeMotion(engine.notice, engine.notice_ms)
+        rect = self.resources.dialogue_layout().bank.rectangle(17, 0x30 if portrait.mode == 1 else 0x4e)
+        x, y = motion.origin(rect, portrait.mode)
+        # Native alignment 5 is top-left, with no automatic wrapping. Preserve
+        # the font's baked-in red lettering and white outline by using white RGB.
+        layout = self.text.layout(NOTICE_FONT, engine.notice, 2**31, NOTICE_STYLE)
+        for index, glyph in enumerate(layout.glyphs):
+            image = self.text._glyph_image(NOTICE_FONT, glyph, motion.scale)
+            if motion.alpha < 255:
+                image = image.copy()
+                image.set_alpha(motion.alpha)
+            self.canvas.blit(image, (round(x + glyph.x * motion.scale),
+                                     round(y + glyph.y * motion.scale - motion.glyph_rise(index))))
+
     def draw(self, target, session):
         details = session.pending.details
         key = id(session), session.scene, session.vm.steps_executed, details['page_start']
@@ -140,6 +161,7 @@ class DialogueRenderer:
         self.draw_portrait(motion.previous, motion.previous_scale)
         self.draw_portrait(motion.portrait, motion.portrait_scale)
         self.draw_relationship(motion)
+        self.draw_notice(session.engine)
         self.text.draw_layout(self.canvas, page.body_font, page.body, *page.body_origin,
                               source_end=motion.revealed)
         self.name_layer.set_alpha(motion.name_alpha)

@@ -333,9 +333,6 @@ class Desktop:
             except (ContentError, pygame.error, OSError, ValueError) as error:
                 self.error = str(error)
                 logging.error('Scene label rendering stopped: %s', error)
-        if engine.notice_ms:
-            self.story_text.draw(self.canvas, 'ArialRoundedMTBold16', engine.notice, 105, 570,
-                                 355, TextStyle(16, 2, (255, 255, 0)), scale=1.25)
         if self.menu_open:
             self._draw_menu()
         self._sync_audio()

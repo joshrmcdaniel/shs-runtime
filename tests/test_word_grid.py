@@ -11,8 +11,8 @@ from test_runtime import Resources, host_call, text_words
 from test_vm import program
 
 
-def resources(*, tutorial=False):
-    words, refs = text_words('Find a word', 'CAT', 'cat', 'catx', 'cat\ncat', 'Learn',
+def resources(*, tutorial=False, targets='cat'):
+    words, refs = text_words('Find a word', 'CAT', targets, 'catx', 'cat\ncat', 'Learn',
                              'Trace the letters', 'Correct', 'Try again')
     table = len(words)
     words += [3, 2, *refs[:4], 1, 0, 1, -1]
@@ -21,6 +21,26 @@ def resources(*, tutorial=False):
               refs[4], 1, 1, 0, 0, -2]
     args = [2, 200, 1000, 500, 0, -1, -1, 0, -1, 0, 0, 1, table,
             1, refs[7], refs[8], 0, 0, int(tutorial), tutor]
+    return Resources(program(*host_call(96, *args), 0x21, (0x1f, 0xfe01), words=[w & 0xffff for w in words]))
+
+
+def tutorial_resources():
+    words, refs = text_words('Find a word', 'CAT', 'cat', 'catx', '', 'Learn',
+                             'Touch to continue.', 'Trace the word.', 'Try the hint.', 'Correct', 'Try again')
+    table = len(words)
+    words += [3, 2, *refs[:4], 1, 0, 1, -1]
+    tutor = len(words)
+    # Instruction, exercise, retry explanation, hinted exercise, completion.
+    for tap, targets, hints, timed, failure, success, text in (
+            (1, refs[4], 0, 0, -1, 1, refs[6]),
+            (0, refs[2], 0, 1, 2, 4, refs[7]),
+            (1, refs[4], 1, 0, -1, 3, refs[8]),
+            (0, refs[2], 1, 1, 2, 4, refs[7]),
+            (1, refs[4], 0, 0, -1, -2, refs[6])):
+        words += [refs[5], text, 0, tap, 0, 3, 1, refs[0], refs[1], targets,
+                  1, refs[2], hints, 0, timed, failure, success]
+    args = [2, 200, 1000, 500, 0, -1, -1, 0, -1, 0, 0, 1, table,
+            1, refs[9], refs[10], 0, 0, 5, tutor]
     return Resources(program(*host_call(96, *args), 0x21, (0x1f, 0xfe01), words=[w & 0xffff for w in words]))
 
 
@@ -33,6 +53,67 @@ def play_phase(session):
 
 
 class GridTests(unittest.TestCase):
+    def test_native_grid_words_trim_controls_and_drop_empty_fields(self):
+        for text, expected in [(' cat ||\x1f| cat | ', ['cat', 'cat']),
+                               ('cat|x', ['cat']), ('cat|x ', ['cat', 'x']), ('x', ['x'])]:
+            with self.subTest(text=text):
+                s = Session(resources(targets=text)); s.engine.random = NativeRandom(1)
+                self.assertEqual(s.advance().name, 'word_grid')
+                self.assertEqual(s.engine.word_grid.problems[0].words, expected)
+
+    def test_instruction_pages_timeout_retry_save_and_game_callback(self):
+        r = tutorial_resources(); s = Session(r); s.engine.random = NativeRandom(1)
+        self.assertEqual(s.advance().name, 'word_grid')
+        held = s.vm.snapshot(); initial_random = s.engine.random.state
+        g = s.engine.word_grid
+        self.assertEqual((g.problem.words, g.starts, g.initial_starts), ([], [], 0))
+        self.assertEqual((g.problem.failure_next, g.problem.success_next), (-1, 1))
+        play_phase(s)
+        for _ in range(8): s.tick(250)
+        self.assertEqual((g.problem_index, g.round_ms, g.remaining_ms, g.score), (0, 1000, 2000, 0))
+        s.answer(); play_phase(s)
+        self.assertEqual(g.problem_index, 1)
+        for _ in range(4): s.tick(250)  # Let the exercise time out normally.
+        play_phase(s)
+        self.assertEqual((g.problem_index, g.problem.words, g.starts), (2, [], []))
+        saved = json.loads(json.dumps(s.snapshot()))
+        s = Session.from_snapshot(r, saved); g = s.engine.word_grid
+        self.assertEqual(json.loads(json.dumps(s.snapshot())), saved)
+        self.assertEqual(s.engine.random.state, initial_random)  # Fixed boards consume no randomness.
+        s.answer(); play_phase(s)
+        self.assertEqual(g.problem_index, 3)
+        self.assertTrue(g.problem.show_hints)
+        s.grid_pointer('down', 0); s.grid_pointer('move', 1); s.grid_pointer('move', 2)
+        self.assertEqual(g.score, 100)
+        play_phase(s)
+        self.assertEqual((g.problem_index, g.starts), (4, []))
+        self.assertEqual(s.vm.snapshot(), held)
+        s.answer(); play_phase(s)
+        self.assertFalse(g.tutorial)
+        self.assertEqual(g.score, 0)
+        self.assertGreaterEqual(len(g.starts), 1)
+        s.engine.result_cells[0] = 19
+        for _ in range(160):
+            action = s.tick(250)
+            if action.name != 'word_grid': break
+        self.assertEqual(action.request.args, (0,))  # No points in the timed game.
+        self.assertEqual(s.engine.result_cells[0], 19)
+
+    def test_playable_grids_and_reachable_tutorial_links_still_require_valid_data(self):
+        for targets in ('', ' | ', '\xa0cat', 'catcatcat'):
+            with self.subTest(targets=targets):
+                s = Session(resources(targets=targets)); before = copy.deepcopy(s.engine)
+                with self.assertRaises(ValueError): s.advance()
+                self.assertEqual(s.engine, before)
+                self.assertEqual(s.vm.pending.yield_id, 96)
+        s = Session(tutorial_resources()); s.advance()
+        for index, field, value in ((1, 'words', []), (1, 'failure_next', -1),
+                                     (0, 'success_next', -1), (0, 'failure_next', 999)):
+            invalid = copy.deepcopy(s.engine.word_grid)
+            setattr(invalid.tutorials[index], field, value)
+            with self.subTest(index=index, field=field), self.assertRaises(ValueError):
+                invalid.validate_config()
+
     def test_native_random_uses_full_product_and_signed_absolute_value(self):
         r = NativeRandom(1)
         self.assertEqual(r.next(), 16838)

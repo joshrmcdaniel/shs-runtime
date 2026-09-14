@@ -30,6 +30,23 @@ class AtlasTests(unittest.TestCase):
         self.assertIsNone(font.glyph('?'))
         with self.assertRaises(UIAssetError):AtlasFont.parse(data[:-1]+b'\x09',atlas)
 
+    def test_native_font_wrapping_tracking_and_paragraph_height(self):
+        # Authored glyph metrics: negative tracking, a line gap, and an
+        # intentionally narrower I. No platform fonts or original assets.
+        font = AtlasFont(4, 2, -1, 10, {ord(c): (0, 0, 8 if c != 'I' else 3)
+                                      for c in 'ABCDEFGHI'})
+        self.assertEqual(font.width('   AB'), 15)
+        self.assertEqual(font.width('A I'), 13)
+        self.assertEqual(font.width('II', 'A'), 15)
+        lines = font.wrap('  AB CD\n\nEFGHI\n', 22)
+        self.assertEqual(lines, ('AB', 'CD', '', 'EFG', 'HI'))
+        self.assertEqual(font.text_height(lines), 58)
+        self.assertEqual(font.wrap('', 22), ())
+        self.assertEqual(font.text_height(()), 0)
+        self.assertEqual(font.wrap('AB  CD', 15), ('AB', 'CD'))
+        self.assertEqual(replace(font, style=255).text_height(('A', 'B')), 19)
+        with self.assertRaises(UIAssetError): font.wrap('A', 7)
+
     @unittest.skipUnless(Path('.shs-library/library.json').exists(), 'user library absent')
     def test_original_grid_and_football_atlases(self):
         with ContentLibrary(Path('.shs-library')) as lib:

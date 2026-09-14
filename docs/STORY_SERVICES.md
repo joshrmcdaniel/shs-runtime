@@ -5,6 +5,43 @@ Reference: SHS Android 1.0.9, `libshs09.so`, SHA-256
 These are host-service contracts; VM opcodes and EXP resource IDs are separate
 namespaces. All assets, text and bytecode come from the player's content.
 
+## Dialogue panel close (service 39)
+
+```text
+arguments : none read; any supplied argument words are discarded on completion
+target    : current dialogue panel, native UI type 3
+result    : 0, immediately; no input callback or additional timer
+effect    : retire that panel's presentation state
+```
+
+Dispatcher case `0x27` looks up panel 3 through `FUN_0007dff0`, then calls
+`FUN_000a7cd0`. That helper sets the byte at panel `+0x0c` to 1. The panel's
+virtual slot `+0x30` points to `0x000a63e0`, which reads that byte. Scene update
+`FUN_0007feac` checks it and removes the panel through `FUN_0007fd28`, calling
+deactivation, cleanup and destruction. This flag is separate from the callback
+flag at panel `+0x0d`; service 39 does not suspend the VM for user input.
+The ordinary dispatcher completion returns zero and removes the entire pending
+argument frame. It does not choose or schedule another script.
+
+The compatible host clears the dialogue panel's background, speaker, text,
+portrait and animation state, plus its active/queued notice (service 88 stores
+the queued text at panel `+0xf0`). A subsequent panel starts without an outgoing
+portrait or stale speaker name. Character definitions, relationship properties
+and caches, other numeric/string state, result cells, randomness, audio requests
+and scheduled scripts survive. The scene-owned badge and queued wobble survive
+as well; services 90 and 89 store those outside the dialogue panel.
+
+Native removal happens in the scene update or the cleanup at script HALT
+(`FUN_0007e4c4`). The runtime retires the panel during dispatch, before its next
+presented screen. The full native panel stack and ordering of several panel
+operations within a single frame remain a fidelity boundary.
+
+Football Star scene 25013 issues service 39 at PC 13, then HALTs at PC 14.
+The existing LIFO schedule determines what runs next. Saves retained at the
+previously unsupported call are validated and resumed through the handler on
+load, then execute normally to the next stop. No prior choices or random draws
+are replayed, and save version 6 needs no new fields.
+
 ## Portrait selection (service 78)
 
 ```text
@@ -137,6 +174,104 @@ The key remains `(s16(owner)*65536+s16(key)) mod 2^32`.
 The getter uses arithmetic right shift, including sign fill for counts >=32.
 Exactly 1 sets a bit; every other value clears it. Evidence: `FUN_000965bc`,
 `FUN_00095ca0`, and the common setter `FUN_00096474`.
+
+## Dialogue notifications (service 88)
+
+```text
+arguments : text_ref:i16
+result    : 0, immediately; no notification callback
+queue     : one substituted Latin-1 string, panel 3 +0xf0
+consumer  : next dialogue presentation (000aaa40)
+```
+
+This is the common path for stat changes, grades and upgrade messages. The
+Football Star scripts use it for Strength Up, Popularity Up/Down, +1 to Grades,
+and the block/running/pass upgrades. There is no stat-name lookup in the
+renderer. Scripts change numeric properties and request sounds separately;
+service 88 itself changes neither stats, result cells, audio nor randomness.
+Repeated calls replace the queued string. Substitution happens when queued,
+not when displayed. An empty string clears the queue.
+
+The next dialogue consumes the queue, creates the notice immediately and
+starts its own active-time countdown. The additional animation-delay arguments
+passed by `000aaa40` are unused by `0009c814`; the notice does not wait for the
+portrait or body-text reveal. Its node is attached to the current portrait
+parent at child/z-order tag 25000. It is a sibling of the scaled head, so it
+does not inherit that head's entrance zoom or horizontal flip. A hidden
+portrait parent (narration or missing character art) also hides the notice.
+
+### Typography and placement
+
+`0007cbbc` constructs the notice label `002ae924` with font-registry entry 14,
+`PajamaHipS26.fnt`, nominal height 16 and extra line gap 5. The font's red
+lettering and white outline come from the player's APK atlas. `0009c814`
+sets RGB to white, preserving those baked colors. It sets the label scale to
+1 for fewer than 19 source bytes, and 0.88 otherwise. Alignment 5 is top-left,
+with explicit newlines but no automatic wrapping or emphasis markers
+(`0004de48` / `0004dc20`). Existing font advances, offsets and kerning apply.
+
+In native GL coordinates the notice starts at `(-60,50)` relative to the
+mode-1 portrait parent, or `(-260,50)` for mode 2. The parent center comes from
+layout 17 rectangle 0x30 or 0x4e, with `000aaa40`'s `485-y` conversion. In the
+runtime's downward coordinates, for portrait rectangle center `(cx,cy)`:
+
+```text
+notice_origin = (cx + (-60 if mode == 1 else -260), cy - 55)
+glyph_left    = notice_origin.x + scale * font_layout.glyph_left
+glyph_top     = notice_origin.y + scale * font_layout.glyph_top - rise(i,t)
+```
+
+The label has zero content size, so its half-width/height anchor adds no
+translation. These positions are evaluated on the native 320×480 dialogue
+canvas before scaling to the desktop window. The notice is drawn with its
+portrait, rather than over unrelated panels or the host menu.
+
+### Letter entrance, exit and input
+
+`0009c814` starts every letter's linear `MoveBy(0,40)` simultaneously. Drawn
+child index `i` has duration `30*(i+1)` ms: the first letter finishes first,
+making a rising wave. Child tags count non-space glyphs across lines
+(`0004d3f8`), independently of source-byte indices. Spaces and newlines still
+contribute to the overall display lifetime.
+
+For source length `N`, the scheduling variable starts at 30 ms and is
+incremented after **each** source byte. The exit therefore starts at
+`165*(N+1)` ms, not `165*N`. `0009c7c8` invokes `0009c750` once; the label then
+fades from 255 to 0 and moves upward another 50 units over 300 ms. The linear
+action updates are verified at `00136364` and `001365f4`.
+
+```text
+exit_start_ms = 165 * (N + 1)
+lifetime_ms   = exit_start_ms + 300
+exit          = clamp((t - exit_start_ms) / 300, 0, 1)
+rise(i,t)     = scale * 40 * clamp(t / (30 * (i+1)), 0, 1) + 50 * exit
+alpha         = trunc(255 * (1-exit))
+```
+
+`000a9868` hides the notice at the beginning of dialogue input, including a
+tap that only completes the reveal or advances to another page. This does not
+bypass either input gate or resume a still-revealing VM call. Service 39 also
+clears active and queued notices when closing the panel. Expiry alone does
+not acknowledge dialogue or generate a game result.
+
+The existing save fields are sufficient: `next_dialogue_notice:string`,
+`notice:string`, and `notice_ms:int` (remaining time, including the fade).
+An empty active notice requires zero time; otherwise time lies in
+`[0,165*(N+1)+300]`. Elapsed motion is derived from that countdown. Rendering
+does not advance it, and the desktop excludes menu/unfocused time. Older
+saves retain their shorter saved remaining countdown without changing VM
+state; their motion is reconstructed from the corrected deadline. No save
+fields or new save version are needed.
+
+Authored tests cover replacement/substitution, unrelated stat/result/random
+state, letter geometry, the long-message scale, fade, input/page gates,
+save/load during each phase, malformed timers, pixel movement with an authored
+font, and paused clocks. Local verification naturally completes Football
+Star's service-96 encounter and reaches its service-88 Strength Up notice at
+scene 25011, then renders the supplied assets at multiple animation times.
+These are native-code and asset checks, not a running-original frame capture;
+cross-label kerning history and native scheduler frame boundaries retain the
+limitations described in [UI_FIDELITY.md](UI_FIDELITY.md).
 
 ## Scene label and dialogue emphasis (services 89, 90)
 

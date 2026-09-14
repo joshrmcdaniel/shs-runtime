@@ -148,3 +148,56 @@ class AtlasFont:
             elif 65 <= code <= 90 or 192 <= code <= 220:
                 code += 32
         return self.glyphs.get(code)
+
+    @property
+    def line_gap(self):
+        # 000538ac stores header byte 1 at +0x139; 00054490 adds it to
+        # each line's height. The older parser called this byte "style".
+        return self.style if self.style < 128 else self.style - 256
+
+    def char_width(self, char, monospace=None):
+        if monospace is not None:
+            return self.char_width(monospace)
+        glyph = self.glyph(char)
+        return glyph[2] if glyph is not None else self.space_width
+
+    def width(self, text, monospace=None):
+        """000535fc: trim leading spaces, omit the last tracking interval."""
+        return max((max(0, sum(self.char_width(c, monospace) + self.tracking for c in line)
+                        - self.tracking) if line else 0
+                    for line in text.lstrip(' ').split('\n')), default=0)
+
+    def wrap(self, text, width):
+        """00054490: byte glyph advances, space wrapping and explicit newlines."""
+        if width <= 0:
+            raise UIAssetError('Atlas text width must be positive')
+        lines = []
+        while text:
+            text = text.lstrip(' ')
+            if not text:
+                break
+            end, advance = 0, 0
+            while end < len(text) and text[end] != '\n':
+                glyph_width = self.char_width(text[end])
+                if glyph_width > width:
+                    raise UIAssetError('Atlas text column cannot fit a glyph')
+                if advance + glyph_width > width:
+                    break
+                advance += glyph_width + self.tracking
+                end += 1
+            if end == len(text):
+                lines.append(text)
+                break
+            if text[end] == '\n':
+                lines.append(text[:end])
+                text = text[end + 1:]
+            else:
+                space = text.rfind(' ', 0, end + 1)
+                if space > 0:
+                    end = space
+                lines.append(text[:end])
+                text = text[end:]
+        return tuple(lines)
+
+    def text_height(self, lines):
+        return len(lines) * (self.height + self.line_gap) - self.line_gap if lines else 0

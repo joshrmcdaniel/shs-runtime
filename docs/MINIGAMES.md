@@ -250,15 +250,37 @@ tutorial[17]= title_ref, body_ref, text_position, tap_to_advance, hide_board,
 ```
 
 Problem and tutorial text is substituted, except fixed-board bytes are raw.
+Target-word lists use `000cccd0`, which trims bytes 0x00–0x20 at each field's
+ends through `0005f838` and omits empty fields. This differs from the choice
+list parser. An empty reference produces zero target words, not one empty
+word. The native delimiter loop also stops when at most one byte remains after
+`|`: `cat|x` yields only `cat`, while `cat|x ` keeps both words after trimming.
+Duplicates and the order of retained words are preserved.
+
 An ID of -1 uses 1001; the inspected native loop does not increment that default.
 The problem loop ends after adding a record whose alphabet is exactly
 `"inspirem"` (`00098344`/`0005edd8`: equality, not substring search).
 Tutorial title/body references can be negative; absent body disables its text
 position, tap and hide flags. Fixed boards have `width` bytes per row separated
-by one byte, normally newline. Tutorial branches are table indices, or -2 to
-finish tutorials. Finishing tutorials clears their score before the real game.
+by one byte, normally newline or `|`. Untimed, tap-to-advance instruction pages
+may have zero target words and zero valid starting cells; they display the
+fixed board and advance on a tap without awarding points. Playable puzzles
+still require valid target words.
+
+Tutorial branches are table indices, or -2 to finish tutorials. Shipped untimed
+instruction pages also use -1 for their unused failure branch. The runtime
+accepts that value only when the tutorial timer is disabled; it does not treat
+-1 as a transition or an instruction to skip a page. The selected link is still
+checked by `next_problem`, matching `000d01a4`'s direct branch selection.
+Finishing tutorials clears their score before the real game.
 The application suppresses already-seen tutorials; the current runtime stores
 that flag per session and preserves it across the session's script changes.
+
+Football Star scene 25011, service 96 at PC 4578, supplies three generated
+problems and sixteen tutorial records. Records 3, 10 and 13 have empty target
+lists; the instruction pages use unused failure links of -1. The parser and
+validation support these records, including timeout → explanation → hinted
+retry paths, without changing the VM arguments, scores or random stream.
 
 ### 5.2 Boards, paths, scoring
 
@@ -389,6 +411,13 @@ resources `522/523`; tile/arrow sprites are atlas `446`. Football uses atlas
 `290`, including nested field markings, play symbols, coach art and number
 glyphs. Evidence: atlas `000507b8/000503dc`, font `000538ac`.
 
+The service-96 renderer now uses its own paired fonts `510/511`, `512/513`,
+`516/517` and `522/523`, rather than generic dialogue labels. Tutorial panels
+use atlas 446 frames 45–47, measured paragraphs and the record's top/center/bottom
+position. Portraits, cloud borders, headings, the time/score HUD, bottom word
+list and banners follow the recovered native layout. See [GRID_UI.md](GRID_UI.md)
+for coordinates, font metrics, animation contracts and the validation boundary.
+
 ## 7. Saves, verification and remaining fidelity work
 
 Save version **3** embeds the complete typed game dataclasses under
@@ -400,10 +429,18 @@ loading never redraws them randomly. Version 1/2 saves acquire new defaults;
 an old stopped 71/94/96 frame is initialized using its retained original args.
 Historical random draws absent from an old save cannot be reconstructed.
 
-Service 88 now queues a substituted notification for the next dialogue, which
-clears the queue and starts the original length-dependent display timer
-(`0009c814/0009c750`). This lets the New Girl route continue past its post-game
-class notification. The notice's per-letter motion is still simplified.
+Version **7** additionally preserves grid decorative time, active banner state
+and outgoing board faces. Version 1–6 grid saves migrate with zero decorative
+time and no reconstructed banner/outgoing faces, retaining the generated board,
+selection, score, random generator and VM state. Full field schemas and native
+evidence are in [GRID_UI.md](GRID_UI.md#saved-presentation-and-verification).
+
+Service 88 queues a substituted notification for the next dialogue, with the
+original Pajama Hip S font, rising letters and length-dependent fade
+(`0009c814/0009c750`). This shared path handles post-game notifications and stat
+changes without changing their scripted results. The lifetime is
+`165*(source_length+1)+300` ms; dialogue input dismisses it even on a reveal/page
+tap. See the [notification specification](STORY_SERVICES.md#dialogue-notifications-service-88).
 
 Tests cover libc and native random vectors, choices and score clamps, held VM
 frames, callback/result-cell differences, diagonal paths and cell reuse, generated
@@ -414,9 +451,9 @@ resized mouse coordinates and pause/focus gating. These are implementation and
 native-derived rule checks; no running-original frame trace has been compared.
 
 Remaining differences include football field-camera interpolation, several
-feedback/sparkle/sound stages and localized team/banner labels; grid tile flips,
-board-load timing during outgoing animation, header fonts, character placements,
-hint/tutorial positioning and some overlay boundaries. The grid currently builds
+feedback/sparkle/sound stages and localized team/banner labels; grid tile side
+faces, specular highlights, particle effects, ring pulses, flying score deltas,
+board-load timing during outgoing animation and some overlay boundaries. The grid currently builds
 the incoming board when phase 4 begins, whereas native may defer it until the
 outgoing animation completes. Integer clocks may differ at floating-point
 boundaries. Fonts outside the recovered glyph path use existing APK bitmap fonts,

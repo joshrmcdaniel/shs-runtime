@@ -63,7 +63,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 36 (`24`) | t(1) | Sets a panel text field through `FUN_000aa028`. | 0 | X |
 | 37 (`25`) | t(1) | Sets dialogue text through `FUN_000a9f84`, starts display, and waits. | pending | X |
 | 38 (`26`) | a1, a2 | Panel operation `FUN_000a927c(panel3,a1,a2,0,-1,-1,-1,-1)`; semantics partial. | 0 | X |
-| 39 (`27`) | none read here | Calls `FUN_000a7cd0` after panel lookup; purpose unresolved. | 0 | X |
+| 39 (`27`) | none read; supplied arguments ignored | Closes dialogue panel 3 through `FUN_000a7cd0`, setting its removal flag at +0x0c. Completes without a UI callback. See [STORY_SERVICES.md](STORY_SERVICES.md#dialogue-panel-close-service-39). | 0 | C |
 | 40 (`28`) | T(1), T(2), T(3) | Text input, same as 17. | string handle 0x7ff5 | P |
 | 41 (`29`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 42 (`2a`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
@@ -112,7 +112,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 85 (`55`) | none read here | Scene helper `FUN_0007b494`; effect unresolved. | 0 | X |
 | 86 (`56`) | a1, a2, a3 flag | If a3==0, invokes `FUN_0007b488`, then background helper `FUN_000a92f4(panel,a1,a2)`. | 0 | C (static background; flag effect unresolved) |
 | 87 (`57`) | none read here | Reads scene field `+0x264` and narrows to a word; meaning unresolved. | word | X |
-| 88 (`58`) | T(1) | Queues substituted notification in panel-3 `+0xf0`; next dialogue displays and clears it. Native length-based timer is modeled; letter animation is simplified. | 0 | C |
+| 88 (`58`) | T(1) | Queues substituted notification in panel-3 `+0xf0`; next dialogue consumes it. Original notice font, portrait-relative letter motion, length-based fade and tap dismissal; see [notification contract](STORY_SERVICES.md#dialogue-notifications-service-88). | 0 | C |
 | 89 (`59`) | none | Sets a one-shot flag for the next dialogue: box rotation and adjusted reveal delay. `FUN_0007c9e8`. | 0 | C |
 | 90 (`5a`) | icon a1, optional T(2) when a2!=-1 | Nonblocking scene badge: -1 removes it; otherwise icon/text, layout 67 and 200 ms entrance. `FUN_0007b97c`. | 0 | C |
 | 91 (`5b`) | bool(a1) | Loading overlay gates VM execution until active time >3000 ms. Zero argument completes its frame immediately; nonzero retains it until `FUN_0009ea70` clears the overlay. [Contract](STORY_SERVICES.md#loading-overlay-service-91). | R=0; UI cells unchanged | P |

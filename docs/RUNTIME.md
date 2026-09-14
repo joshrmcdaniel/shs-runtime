@@ -253,14 +253,14 @@ IDs take priority, including its scripts in the 25000 range. Playback starts at
 last scheduled script. Registers and complete stack backing survive that load,
 while data and PC/SP/FP reset according to the core VM contract.
 
-## Runtime save schema, version 6
+## Runtime save schema, version 7
 
 This is a new format for the reimplementation. No pickle, object deserialization,
 or original executable code is used. JSON fields are:
 
 | Field | Contract |
 | --- | --- |
-| `format`, `version` | `"shs-runtime-save"`, `6` |
+| `format`, `version` | `"shs-runtime-save"`, `7` |
 | `content` | `profile`, `apk_sha256`, `episode_sha256`; must exactly match loaded content |
 | `scene` | Unsigned current script resource ID |
 | `script_sha256` | Hash of the losslessly encoded current program |
@@ -318,6 +318,13 @@ Version 1/2 saves receive defaults for these fields. If their retained stop is
 service 71, 94 or 96, the game is initialized from that original frame; missing
 historical random state cannot be reconstructed.
 
+Service-88 notices derive their letter motion from the existing remaining
+`notice_ms` countdown, independently of the dialogue reveal clock. Its native
+upper bound is `165*(len(notice)+1)+300` for nonempty text, zero otherwise.
+Older notice saves retain their remaining time and VM state. No fields were
+added for this rendering correction. See the
+[notification contract](STORY_SERVICES.md#dialogue-notifications-service-88).
+
 Version 4 adds `dialogue_animation`: the current and outgoing portrait identities,
 speaker/page transition flags, active elapsed time, source-index reveal counter,
 completion flag and pending fast-completion state. The field is required on a
@@ -340,6 +347,20 @@ Older unsupported service-91 saves enter the recovered screen; old dialogue
 checkpoints acquire settled icons without losing reveal/page progress. See
 [STORY_SERVICES.md](STORY_SERVICES.md#save-schema-additions-version-6) for the
 fields, validation and migration rules.
+
+Version 7 adds `visual_ms`, `board_entry_ms`, `banner` and `transition` to the word-grid state.
+They preserve active decorative time, the banner's entrance/hold clock, and
+outgoing letters during board transitions. The renderer uses the original
+atlas fonts and instruction panel geometry without mutating the VM or game.
+Earlier grid saves keep their exact board, score, selection and random state;
+missing decorative history starts at zero/null. See
+[GRID_UI.md](GRID_UI.md#saved-presentation-and-verification) for the typed schema.
+
+A save retained at unsupported service 39 now completes the recovered panel
+close through its validated VM frame and follows the saved script queue to
+the next stop. This also applies to version-6 saves; no schema fields change.
+Earlier choices and random draws are not replayed. See
+[STORY_SERVICES.md](STORY_SERVICES.md#dialogue-panel-close-service-39).
 
 Loading checks content identity, program identity, machine extents, field
 types, and correspondence between the pending request, saved instruction, and

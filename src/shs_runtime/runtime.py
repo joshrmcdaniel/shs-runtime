@@ -11,6 +11,7 @@ from typing import get_args, get_origin, get_type_hints
 from .content import EpisodeResources, digest
 from .engine import EngineAction, EngineState
 from .dialogue_animation import DialogueAnimation, DialoguePortrait
+from .dialogue_notice import notice_lifetime
 from .relationships import RelationshipAnimation, RelationshipChange
 from .minigames import NativeRandom, RAND48_INITIAL, RAND48_MASK
 from .vm import KiwiVM, StopKind, VMError, VMStop, signed16
@@ -214,6 +215,10 @@ class Session:
         elif action.name in ('presentation', 'dialogue', 'vm_pause'):
             if value is not None:
                 raise ValueError('This screen expects an acknowledgement')
+            if action.name == 'dialogue':
+                # 000a9868 hides the notice even when this tap only requests
+                # the unfinished text reveal, or turns a page in the same call.
+                self.engine.notice, self.engine.notice_ms = '', 0
             if action.name == 'dialogue' and not self.engine.dialogue_animation.complete:
                 self.engine.dialogue_animation.finish()
                 return action
@@ -309,7 +314,7 @@ class Session:
         return self.advance()
 
     def snapshot(self) -> dict:
-        return dict(format='shs-runtime-save', version=6,
+        return dict(format='shs-runtime-save', version=7,
                     content=self.resources.identity, scene=self.scene,
                     script_sha256=digest(self.vm.program.to_bytes()),
                     vm=self.vm.snapshot(), engine=asdict(self.engine),
@@ -320,9 +325,15 @@ class Session:
     @classmethod
     def from_snapshot(cls, resources: EpisodeResources, state: dict):
         try:
-            if state['format'] != 'shs-runtime-save' or state['version'] not in (1, 2, 3, 4, 5, 6):
+            if state['format'] != 'shs-runtime-save' or state['version'] not in (1, 2, 3, 4, 5, 6, 7):
                 raise SaveError('Unsupported save format or version')
             legacy = state['version'] == 1
+            if state['version'] < 7 and state['engine'].get('word_grid') is not None:
+                state = deepcopy(state)
+                # Older saves have no decorative clock or outgoing tile face.
+                # Resume their board and VM exactly, with settled decoration.
+                state['engine']['word_grid'].update(visual_ms=0, board_entry_ms=2000,
+                                                    banner=None, transition=None)
             if state['version'] < 6:
                 state = deepcopy(state)
                 state['engine']['loading'] = None
@@ -377,7 +388,7 @@ class Session:
             if (len(engine.football_scores) != 2 or
                     any(v is not None and not -32768 <= v <= 32767 for v in engine.football_scores)):
                 raise SaveError('Invalid football scores')
-            if not 0 <= engine.notice_ms <= len(engine.notice) * 165 + 300:
+            if not 0 <= engine.notice_ms <= notice_lifetime(engine.notice):
                 raise SaveError('Invalid dialogue notice timer')
             if len(engine.dynamic_strings) != 11 or len(engine.result_cells) != 10:
                 raise SaveError('Invalid engine slot count')
@@ -532,6 +543,12 @@ class Session:
                     and session.pending.request.yield_id == 91):
                 session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
                 engine.dialogue_animation = None
+            if (session.pending and session.pending.name == 'unhandled_yield'
+                    and session.pending.request.yield_id == 39):
+                # Complete the newly supported call from its validated frame,
+                # then follow the saved script queue without replaying input.
+                session.pending = None
+                session.advance()
             return session
         except (KeyError, TypeError, ValueError, AttributeError) as error:
             if isinstance(error, SaveError):
