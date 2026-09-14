@@ -106,9 +106,13 @@ class ExpArchive:
         if prop >= 225 or dictionary > MAX_PAYLOAD or size1 != raw or size2 != raw:
             raise ContentError('Inconsistent or unsupported EXP LZMA header')
         try:
-            decoder = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
-            result = decoder.decompress(struct.pack('<BIQ', prop, max(4096, dictionary), raw)
-                                        + payload[13:], max_length=raw + 1)
+            # EXP supplies the output boundary; native streams need no end
+            # marker. Raw decoding also avoids older liblzma versions rejecting
+            # a known-size Alone header when an encoder includes an end marker.
+            decoder = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=[dict(
+                id=lzma.FILTER_LZMA1, dict_size=max(4096, dictionary),
+                lc=prop % 9, lp=(prop // 9) % 5, pb=prop // 45)])
+            result = decoder.decompress(payload[13:], max_length=raw)
         except lzma.LZMAError as error:
             raise ContentError(f'Invalid EXP LZMA stream: {error}') from error
         if len(result) != raw:

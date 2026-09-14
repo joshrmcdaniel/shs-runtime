@@ -119,7 +119,8 @@ It allocates the entire output and calls `FUN_0005940c` with property components
 
 ### 3.2 Portable decoding recipe
 
-For the verified corpus, rebuild a standard LZMA-Alone header:
+Decode the raw LZMA1 body using the wrapper's properties and an output limit
+of exactly `decoded_size`:
 
 ```python
 import lzma
@@ -129,18 +130,37 @@ def decode_exp_lzma(payload: bytes, decoded_size: int) -> bytes:
     if len(payload) < 13:
         raise ValueError("truncated EXP LZMA wrapper")
     props, dictionary, size1, size2 = struct.unpack_from("<BIII", payload)
-    if props >= 225 or size1 != decoded_size or size2 != decoded_size:
+    limit = 64 * 1024 * 1024  # Runtime profile's allocation limit.
+    if (props >= 225 or dictionary > limit or not 0 <= decoded_size <= limit
+            or size1 != decoded_size or size2 != decoded_size):
         raise ValueError("unsupported or inconsistent EXP LZMA header")
-    header = struct.pack("<BIQ", props, max(4096, dictionary), decoded_size)
-    result = lzma.decompress(header + payload[13:], format=lzma.FORMAT_ALONE)
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=[dict(
+        id=lzma.FILTER_LZMA1, dict_size=max(4096, dictionary),
+        lc=props % 9, lp=(props // 9) % 5, pb=props // 45)])
+    result = decoder.decompress(payload[13:], max_length=decoded_size)
     if len(result) != decoded_size:
         raise ValueError("wrong decoded size")
     return result
 ```
 
-Checking both size copies is a validation policy, not a native check. Limit declared output sizes appropriately before allocating.
+Checking both size copies and limiting allocations are runtime validation
+policies, not native checks. Invalid or unsupported LZMA properties and corrupt
+streams raise `lzma.LZMAError`; the runtime reports these as `ContentError`.
 
-Raw LZMA1 decoding with explicit properties and an output limit of exactly `decoded_size` is another option. All 9,255 entries produced identical bytes with both approaches and with the previous decoder's oversized 1 MiB dictionary. That oversized dictionary explains why the BE assumption worked locally; it does not establish the field's byte order.
+The historical corpus audit compared this bounded raw decoder with a rebuilt
+LZMA-Alone header containing one LE 64-bit decoded size. All 9,255 entries
+produced identical bytes with both approaches and with the previous decoder's
+oversized 1 MiB dictionary. That oversized dictionary explains why the BE
+assumption worked locally; it does not establish the field's byte order.
+
+The raw recipe also supports authored streams containing an end marker.
+Rebuilding a known-size Alone header for those streams fails with liblzma
+5.2.5 and earlier, as documented in the upstream
+[LZMA format notes](https://github.com/tukaani-project/xz/blob/master/doc/lzma-file-format.txt).
+CPython's [Windows build dependencies](https://github.com/python/cpython/blob/3.14/PCbuild/get_externals.bat)
+include xz 5.2.5, explaining why this combination failed in Windows CI while
+passing with newer liblzma on macOS. Retain raw decoding on every platform;
+the fixture encoder does not need a platform-specific workaround.
 
 Do not require an LZMA end marker for completion. The audited raw decoders have not reached EOS when the required output size is produced, and known-size LZMA-Alone decoding succeeds. Decoding beyond that size can produce extra bytes from remaining range-coder state. Output length is the boundary; returning fewer bytes is not success. Exact compressed-byte consumption and optional end-marker behavior for other encoders remain uncharacterized.
 

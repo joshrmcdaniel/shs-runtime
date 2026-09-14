@@ -40,6 +40,12 @@ def archive(records, *, compressed=(), aliases=None):
             + b''.join(struct.pack('>HI', key, offset) for key, offset in sorted(entries.items())) + bodies)
 
 
+def compressed_archive(body, decoded_size, *, properties=0x5D, dictionary=4096):
+    wrapper = struct.pack('<BIII', properties, dictionary, decoded_size, decoded_size) + body
+    return (b'CSPUD' + struct.pack('>IHI', 1, 42, 15)
+            + struct.pack('>III', len(wrapper), decoded_size, 1) + wrapper)
+
+
 FAKE_NATIVE = b'authored native-profile test fixture, never executed'
 
 
@@ -65,6 +71,41 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(exp.metadata().titles[1], 'École')
         self.assertEqual(len(exp.metadata().titles), 5)
         self.assertEqual(set(exp.programs()), {25001})
+
+    def test_lzma_end_markers_and_property_combinations(self):
+        for lc, lp, pb, dictionary in ((3, 0, 2, 4096), (1, 2, 0, 8192), (4, 0, 4, 65536)):
+            for payload in (b'', b'Authored compressed resource. ' * 40):
+                with self.subTest(lc=lc, lp=lp, pb=pb, dictionary=dictionary, size=len(payload)):
+                    filters = [dict(id=lzma.FILTER_LZMA1, dict_size=dictionary, lc=lc, lp=lp, pb=pb)]
+                    body = lzma.compress(payload, format=lzma.FORMAT_RAW, filters=filters)
+                    data = compressed_archive(body, len(payload),
+                                              properties=(pb * 5 + lp) * 9 + lc, dictionary=dictionary)
+                    self.assertEqual(ExpArchive(data).read(42), payload)
+
+    def test_lzma_without_an_end_marker(self):
+        payload = b'Authored EXP payload without an end marker.'
+        # Authored bytes encoded with liblzma's LZMA1EXT, preset 6,
+        # dict_size=4096, lc=3, lp=0, pb=2, ext_flags=0 (no end marker).
+        body = bytes.fromhex(
+            '00209d4a869a6f72a1742c35d7e646a4a143ef922720aa1f6768'
+            '0636cae34f2ca70b0395361c7b4f0e64e17454c006')
+        self.assertEqual(ExpArchive(compressed_archive(body, len(payload))).read(42), payload)
+
+    def test_lzma_stops_at_the_declared_output_boundary(self):
+        payload = b'Declared EXP output.'
+        body = lzma.compress(payload + b' More range-coded bytes beyond the declared output.',
+                             format=lzma.FORMAT_RAW,
+                             filters=[dict(id=lzma.FILTER_LZMA1, dict_size=4096)])
+        self.assertEqual(ExpArchive(compressed_archive(body, len(payload))).read(42), payload)
+
+    def test_invalid_and_short_lzma_bodies_are_rejected(self):
+        payload = b'An authored complete payload.'
+        body = lzma.compress(payload, format=lzma.FORMAT_RAW,
+                             filters=[dict(id=lzma.FILTER_LZMA1, dict_size=4096)])
+        for encoded, declared in ((b'', len(payload)), (body[:5], len(payload)),
+                                  (b'\xFF' + body[1:], len(payload)), (body, len(payload) + 1)):
+            with self.subTest(body=encoded, declared=declared), self.assertRaises(ContentError):
+                ExpArchive(compressed_archive(encoded, declared)).read(42)
 
     def test_bad_offsets_flags_sizes_and_lzma_are_rejected(self):
         original = archive({1: metadata()}, compressed=(1,))
