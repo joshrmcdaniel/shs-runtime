@@ -1,5 +1,8 @@
 # Development
 
+See [MAINTAINERS.md](../MAINTAINERS.md) for contributor setup, reporting issues,
+compatibility requirements and pull request guidance.
+
 The project is self-contained under `src/shs_runtime`. It does not import
 modules from the old decoder checkout or require any extracted game files
 to install, test its synthetic fixtures, or build an executable.
@@ -13,6 +16,7 @@ uv sync --locked --extra desktop
 uv run --locked --extra desktop python -m unittest discover -s tests
 uv run --locked --extra desktop shs
 uv run --locked --extra build python tools/build_desktop.py
+uv run --locked --extra build python tools/package_desktop.py --label local --smoke-test
 ```
 
 `shs-tool` provides `import`, `list`, `play` and `trace`. It can also be invoked
@@ -50,11 +54,16 @@ Unknown services remain explicit diagnostic stops.
 
 ## Tests and private content
 
-The default test command works without any game files. Original-content
-tests are optional and report skips in a clean checkout. They look for a
-local `.shs-library`, an `Episodes` directory or the earlier optional
-`extract/assets/Assets/The_New_Girl.exp` fixture. These paths are ignored by
-Git and never packaged. Do not commit originals as fixtures.
+See [Running unit tests](../MAINTAINERS.md#running-unit-tests) for full-suite,
+single-file and individual-test commands, filtering options and expected skips.
+
+The default test command works without any game files. For optional checks,
+follow [Testing with your own game files](../MAINTAINERS.md#testing-with-your-own-game-files):
+place your APK at `surviving-high-school-1-0-9.apk` in the repository root and
+import it into `.shs-library`. That guide also lists episode-specific inputs
+and the optional `extract/assets/Assets/The_New_Girl.exp` fixture. The tests do
+not search the desktop app's application-data directory. These local paths
+are ignored by Git and never packaged. Do not commit originals as fixtures.
 
 Corpus tools accept user-supplied paths:
 

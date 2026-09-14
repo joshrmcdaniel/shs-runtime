@@ -9,6 +9,21 @@ You need your own **SHS Android 1.0.9 APK** and any additional **EXP episodes**
 you want to play. The importer reads those files locally. Game content is not
 included in this project and is not downloaded by it.
 
+## Download an app
+
+Open this repository's **Releases** page and download the archive for your
+system: `windows-x64`, `linux-x64`, `macos-arm64` (Apple Silicon), or
+`macos-x64` (Intel). Extract it and open the app inside. Keep the complete app
+or executable folder together. Python and the runtime dependencies are bundled.
+
+For development builds, open **Actions → Desktop builds**, choose a successful
+run, and download its platform artifact. Extract the artifact ZIP, then the
+app archive inside it.
+
+Builds include a SHA-256 checksum. macOS builds use ad-hoc signing and are not
+notarized; Windows builds are unsigned. See [distribution](docs/DISTRIBUTION.md)
+for CI triggers, packaging and the first-launch requirements.
+
 ## Build your own app
 
 Install Git and uv, clone this project, then run from the project's directory:
@@ -29,7 +44,9 @@ uv prepares the local environment and installs the locked dependencies.
 
 Build on the operating system where you will play. Keep the whole app or
 executable directory together: it includes Python and its dependencies.
-macOS on Apple Silicon has been tested; Windows and Linux need validation.
+CI builds and checks all four targets. Local verification has covered macOS
+on Apple Silicon; a successful CI run checks the other platforms' startup,
+but full gameplay still needs testing on each system.
 
 You can also run directly from source:
 
@@ -72,6 +89,9 @@ with their scene, service and program counter. Current limits are recorded in
 
 ## Specifications and development
 
+To contribute code, tests, documentation or compatibility reports, start with
+[MAINTAINERS.md](MAINTAINERS.md).
+
 - [EXP format](docs/SCHEMA.md): container, index, compression, metadata and payloads.
 - [KiWi VM](docs/VM_SPEC.md): bytecode, all core opcodes, memory, calls and yields.
 - [Engine services](docs/ENGINE_ABI.md): native service contracts and coverage.
@@ -80,9 +100,16 @@ with their scene, service and program counter. Current limits are recorded in
 - [Mini games](docs/MINIGAMES.md) and [story services](docs/STORY_SERVICES.md).
 - [Development and tests](docs/DEVELOPMENT.md), [distribution](docs/DISTRIBUTION.md)
   and [project provenance](docs/PROVENANCE.md).
+- [Release notes](RELEASE.md) and [changelog](CHANGELOG.md).
+
+Run the full test suite from the repository root with the command below.
+See [Running unit tests](MAINTAINERS.md#running-unit-tests) for dependency
+setup, running individual tests and interpreting optional skips.
+For checks against your APK and episodes, follow
+[Testing with your own game files](MAINTAINERS.md#testing-with-your-own-game-files)
+to place the inputs and create the local test library.
 
 ```sh
 uv run --locked --extra desktop python -m unittest discover -s tests
 uv run --locked shs-tool --help
 ```
-

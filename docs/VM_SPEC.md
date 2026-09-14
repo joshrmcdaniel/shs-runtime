@@ -418,7 +418,7 @@ Text substitution is also a host operation. `FUN_0009f9fc` resolves text and app
 
 Service 10 records `(script_resource_id, flag)` through `FUN_0007b44c`. The engine's scene runner `FUN_0007f5f4` consumes scheduled scripts in **LIFO order after HALT**. Scheduling does not immediately jump within bytecode, and `0x33` alone does not identify a next scene. The flag affects native panel handling; rendering that effect is not implemented.
 
-Game variables, character names/art, replacement strings, audio/UI state, and the schedule live outside the core data array. They survive ordinary scene changes in the current host model. A faithful port needs both VM and host state when saving a pending choice. The reimplementation now saves that modeled state in a versioned JSON format, including complete stack backing and a pending input frame; see [runtime save schema](docs/RUNTIME.md#runtime-save-schema-version-1). Neither that format nor `load_next()` specifies the original native save-file format. Native serialization, missing host state, and full renderer/rollback behavior remain open.
+Game variables, character names/art, replacement strings, audio/UI state, and the schedule live outside the core data array. They survive ordinary scene changes in the current host model. A faithful port needs both VM and host state when saving a pending choice. The reimplementation now saves that modeled state in a versioned JSON format, including complete stack backing and a pending input frame; see [runtime save schema](RUNTIME.md#runtime-save-schema-version-6). Neither that format nor `load_next()` specifies the original native save-file format. Native serialization, missing host state, and full renderer/rollback behavior remain open.
 
 ## 10. Conformance examples and validation
 
@@ -448,7 +448,7 @@ At the request: issuing PC=3, encoded byte offset=22, next PC=4, SP=1, arguments
 
 ### 10.3 Current verification and limits
 
-[bytecode.py](src/shs_runtime/decode/bytecode.py) round-trips all 987 corpus scripts exactly: 1,566,964 instructions and 56,761 static branch instructions. [vm.py](src/shs_runtime/vm.py) implements the recovered core with explicit validation, and [engine.py](src/shs_runtime/engine.py) implements the verified host subset. The legacy heuristic action parser remains in the research project and is not included here.
+[bytecode.py](../src/shs_runtime/decode/bytecode.py) round-trips all 987 corpus scripts exactly: 1,566,964 instructions and 56,761 static branch instructions. [vm.py](../src/shs_runtime/vm.py) implements the recovered core with explicit validation, and [engine.py](../src/shs_runtime/engine.py) implements the verified host subset. The legacy heuristic action parser remains in the research project and is not included here.
 
 ```sh
 uv run --locked python -m unittest discover -s tests
@@ -458,7 +458,7 @@ uv run --locked python tools/audit_vm.py > docs/vm-corpus-audit.json
 
 The core decoder/VM tests cover binary truncation and round trips, result-dependent branches, signed arithmetic, frame calls/returns, loops, memory, retained requests, and the bundled initialization fixture. The fixture test is skipped when local assets are absent. The two synthetic byte sequences above can be checked directly with `decode_program()` and `KiwiVM`.
 
-The historical bounded corpus trace executed 501,556 instructions across 274 archives without a VM error or budget exhaustion: 37 stops at recognized presentations and 237 at unimplemented services. These runs stop before unresolved operations; they do not validate complete episodes or demonstrate equivalence to a live native playthrough. See [VM_EXECUTION.md](docs/VM_EXECUTION.md) and `vm-corpus-audit.json`.
+The historical bounded corpus trace executed 501,556 instructions across 274 archives without a VM error or budget exhaustion: 37 stops at recognized presentations and 237 at unimplemented services. These runs stop before unresolved operations; they do not validate complete episodes or demonstrate equivalence to a live native playthrough. See [VM_EXECUTION.md](VM_EXECUTION.md) and `vm-corpus-audit.json`.
 
 | Area | Defined / implemented | Remaining limit |
 | --- | --- | --- |

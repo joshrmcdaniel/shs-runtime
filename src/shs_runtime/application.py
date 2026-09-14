@@ -9,6 +9,7 @@ from io import BytesIO
 import logging
 import os
 from pathlib import Path
+import tempfile
 
 os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
@@ -507,7 +508,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Surviving High School — bring your own APK and episodes')
     parser.add_argument('--library', type=Path, help='Local content library (default: per-user application data)')
     parser.add_argument('--no-audio', action='store_true')
+    parser.add_argument('--smoke-test', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.smoke_test:
+        # A packaged-build check must never open or alter the player's library.
+        with tempfile.TemporaryDirectory(prefix='shs-setup-test-') as temporary:
+            app = Application(Path(temporary) / 'library', audio=False)
+            try:
+                if app.screen != 'setup' or app.library is not None:
+                    raise RuntimeError('Expected first-launch setup without game content')
+                app.render()
+            finally:
+                app.close()
+        return
     Application(args.library, audio=not args.no_audio).run()
 
 
