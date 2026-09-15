@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 from .content import ContentError, MAX_PAYLOAD, is_bundled
-from .runtime import Session
+from .runtime import SaveError, Session
 from .ui_assets import Raster, Rect, UIAssetError, _Reader
 
 
@@ -200,7 +200,24 @@ class MenuState:
 
     def resume_path(self, episode):
         paths = [self.save_path(episode, automatic=auto) for auto in (False, True)]
-        return max((p for p in paths if p.is_file()), key=lambda p: p.stat().st_mtime_ns, default=None)
+        path = max((p for p in paths if p.is_file()), key=lambda p: p.stat().st_mtime_ns, default=None)
+        if path is not None:
+            try:
+                if path.stat().st_size > 8 * 1024 * 1024:
+                    return path  # Session.load reports the existing size limit.
+                saved = json.loads(path.read_text(encoding='utf-8'))
+                pending = saved.get('pending') if isinstance(saved, dict) else None
+                if isinstance(pending, dict) and pending.get('name') == 'episode_exit':
+                    # A validated terminal checkpoint masks older progress.
+                    # Keep the manual slot available for an explicit load.
+                    session = Session.from_snapshot(self.library.open_episode(episode), saved)
+                    if session.episode_exited:
+                        return None
+            except (SaveError, OSError, ValueError, AttributeError):
+                # Invalid saves remain resumable so loading reports the error;
+                # a malformed completion marker must not discard progress.
+                pass
+        return path
 
     def persist(self):
         data = dict(version=1, selected=self.selected, music=self.music, sound=self.sound, order=self.order)
@@ -227,9 +244,10 @@ class MenuState:
         return session
 
     def checkpoint(self, session):
-        session.save(self.save_path(session.resources.record['id'], automatic=True))
+        path = session.save(self.save_path(session.resources.record['id'], automatic=True))
         self.selected = session.resources.record['id']
         self.persist()
+        return path
 
 
 def main_button_rects(bank):

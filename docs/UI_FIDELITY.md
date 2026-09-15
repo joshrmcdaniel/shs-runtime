@@ -230,7 +230,7 @@ placing a fresh Mr. Russell label 47.25 logical pixels too low.
 `Session` advances name-font state once per dialogue. Rendering and page turns
 use a copy of the state before that dialogue, so their frequency cannot change
 future placement. Save version 10 retains both banks and validates the current
-layout against them; see [RUNTIME.md](RUNTIME.md#runtime-save-schema-version-11).
+layout against them; see [RUNTIME.md](RUNTIME.md#runtime-save-schema-version-12).
 
 **Compatibility correction, not verified native behavior:** applying these
 native rules with the current imported-font renderer still permits overlaps.
@@ -347,7 +347,7 @@ comes from the former dark, full-width desktop dialogue overlay.
 | --- | --- | --- |
 | 1 | Character with art matches service 74's ID | Portrait on left, name to right |
 | 2 | Other character with art | Portrait on right, name to left |
-| 3 | Character lacks art | No portrait; retains the previous native name object |
+| 3 | Character lacks art, or service 76 supplies an explicit speaker | No portrait; service 76 replaces the name, otherwise retains the previous native name object |
 | 4 | Character matches service 75's ID | No portrait or visible name |
 
 The New Girl configures service 74 to ID 0 and service 75 to ID 32. Character
@@ -362,6 +362,12 @@ decorations precede substitution. Neither prefix selects presentation mode 4.
 Explicit expression overrides pass through a signed low-byte conversion and
 negative clamp before art selection. Secondary expression state, transitions,
 relationship decorations and cache writes remain partly modeled.
+
+Service 76 supplies a speaker string and dialogue directly, selecting mode 3
+and theme -1. It shares the name layout, no-portrait body, reveal and paging
+rules below; it does not assign an NPC name or switch to narration. Its
+[service contract](STORY_SERVICES.md#named-dialogue-without-a-portrait-service-76)
+also describes the transition callback and saved-stop recovery.
 
 ### Box, portrait and text placement
 

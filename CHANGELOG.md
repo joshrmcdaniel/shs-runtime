@@ -3,10 +3,23 @@
 User-visible changes are recorded here. Changes awaiting a versioned release
 are listed under Unreleased.
 
-## Unreleased
+## 0.1.1
 
 ### Fixed
 
+- Implemented services 7/63 for episode exit, fixing Football Star scene
+  25001, PC 130. Endings now cancel queued scripts and return to the main menu.
+  Save version 12 recovers older stops there and retires ordinary Resume
+  progress while preserving manual saves and other episodes' checkpoints.
+- Implemented service 70's verified Android query constants, fixing Football
+  Star scene 25001, PC 222 (selector 10). Existing saves stopped at fixed
+  queries now continue normally. Selector 11 remains explicit until native
+  weekly-episode identity is modeled.
+- Implemented service 76's named dialogue without a portrait, fixing Football
+  Star scene 25011, PC 4303 and other group-speaker lines. Existing saves
+  stopped there resume through the original dialogue reveal and input gates.
+  Dialogue completion now also consumes the queued transition selector and
+  its native random draw, shared with title/message panels.
 - Restored the shared episode-intro and week-card screen, including Football
   Star's week titles: original fonts, background scaling, text placement,
   title wipe, background fade, subtitle animation and tap behavior. Save

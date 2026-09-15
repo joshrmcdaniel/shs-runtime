@@ -424,7 +424,15 @@ Text substitution is also a host operation. `FUN_0009f9fc` resolves text and app
 
 Service 10 records `(script_resource_id, flag)` through `FUN_0007b44c`. The engine's scene runner `FUN_0007f5f4` consumes scheduled scripts in **LIFO order after HALT**. Scheduling does not immediately jump within bytecode, and `0x33` alone does not identify a next scene. The flag affects native panel handling; rendering that effect is not implemented.
 
-Game variables, character names/art, replacement strings, audio/UI state, and the schedule live outside the core data array. They survive ordinary scene changes in the current host model. A faithful port needs both VM and host state when saving a pending choice. The reimplementation now saves that modeled state in a versioned JSON format, including complete stack backing and a pending input frame; see [runtime save schema](RUNTIME.md#runtime-save-schema-version-11). Neither that format nor `load_next()` specifies the original native save-file format. Native serialization, missing host state, and full renderer/rollback behavior remain open.
+Services 7 and 63 are terminal scene exits. `0007e614` resets the scene's VM
+hosts, clears the scheduled-script count and sets the exit flag at `+0x1b`;
+`0007f5f4` does not load more queued scripts when it is set. The following
+instruction in the current program does not execute. The compatible Session
+retains the final call frame as a nonresumable audit record for its terminal
+checkpoint, rather than serializing the discarded native VM's reset memory.
+See [episode exit](STORY_SERVICES.md#episode-exit-services-7-and-63).
+
+Game variables, character names/art, replacement strings, audio/UI state, and the schedule live outside the core data array. They survive ordinary scene changes in the current host model. A faithful port needs both VM and host state when saving a pending choice. The reimplementation now saves that modeled state in a versioned JSON format, including complete stack backing and a pending input frame; see [runtime save schema](RUNTIME.md#runtime-save-schema-version-12). Neither that format nor `load_next()` specifies the original native save-file format. Native serialization, missing host state, and full renderer/rollback behavior remain open.
 
 ## 10. Conformance examples and validation
 

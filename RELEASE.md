@@ -1,25 +1,56 @@
-# v0.1.0
+# 0.1.1
 
-SHS Runtime is an experimental compatible engine for Surviving High School.
+## Fixed
 
-Download the archive matching your system, extract it, and keep the complete
-app or executable folder together. Python is included; no development tools
-are needed to play a downloaded build.
-
-- **macos-arm64:** Apple Silicon Macs.
-- **macos-x64:** Intel Macs.
-- **windows-x64:** 64-bit Intel/AMD Windows PCs.
-- **linux-x64:** 64-bit Intel/AMD Linux PCs (built on Ubuntu 22.04).
-
-On first launch, supply your own **SHS Android 1.0.9 APK**, then add your
-**EXP episode files** through Options. Existing libraries can be selected
-with **Open Library**. These downloads contain the engine and its dependencies;
-game assets are imported locally from the files you provide.
-
-The `.sha256` files contain checksums for their corresponding archives.
-macOS builds use ad-hoc signing and are not notarized. Windows builds are
-unsigned. Your operating system may require approval before the first launch.
-
-Complete episode playback and full original-game fidelity remain in progress.
-See the repository's runtime and engine-service documentation for current
-support and known limits.
+- Implemented services 7/63 for episode exit, fixing Football Star scene
+  25001, PC 130. Endings now cancel queued scripts and return to the main menu.
+  Save version 12 recovers older stops there and retires ordinary Resume
+  progress while preserving manual saves and other episodes' checkpoints.
+- Implemented service 70's verified Android query constants, fixing Football
+  Star scene 25001, PC 222 (selector 10). Existing saves stopped at fixed
+  queries now continue normally. Selector 11 remains explicit until native
+  weekly-episode identity is modeled.
+- Implemented service 76's named dialogue without a portrait, fixing Football
+  Star scene 25011, PC 4303 and other group-speaker lines. Existing saves
+  stopped there resume through the original dialogue reveal and input gates.
+  Dialogue completion now also consumes the queued transition selector and
+  its native random draw, shared with title/message panels.
+- Restored the shared episode-intro and week-card screen, including Football
+  Star's week titles: original fonts, background scaling, text placement,
+  title wipe, background fade, subtitle animation and tap behavior. Save
+  version 11 preserves intro animation state and migrates existing saves.
+- Music now pauses with gameplay and resumes from the same position after
+  closing the pause menu, regaining window focus, or returning to a live
+  episode from the main menu.
+- Restored native speaker-name widths, alignment and persistent spacing,
+  including Howard's parents and quiz teachers. A shared glyph-bounds
+  correction keeps names clear of dialogue and portraits across page turns.
+  Save version 10 retains font history and migrates existing saves.
+- Fixed top-left location/time labels so their text aligns inside the badge,
+  including wrapped labels. No content reimport is needed.
+- Restored eleven Android music cues that reuse another APK track at a
+  specific start offset. This fixes missing-music warnings for 8202, 8208,
+  8211, 8220, 8225 and the other verified redirects, using existing libraries.
+- Implemented service 33's Instructions/message panel, fixing Football Star
+  scene 25011, PC 629. Restored its original panel assets, reading delay and
+  acknowledgement callback, including the shared random-stream side effect.
+  Save version 9 preserves reading time and recovers older saves paused there.
+- Relationship indicators now read the correct NPC property, so script changes
+  update the icons and count, including Adam's four skulls in Football Star.
+- Implemented service 39's dialogue panel cleanup, fixing the Football Star
+  stop at scene 25013, PC 13. Saves paused there resume from their existing state.
+- Fixed Football Star's word-grid tutorial initialization by matching the
+  native word-list parser and accepting instruction pages with no targets and
+  unused failure links. Playable-grid validation remains enforced.
+- Restored the word-grid UI's original bitmap fonts, tutorial panels, portrait
+  placement, time/score display, cloud borders and word prompts. Added native
+  banner and panel motion, outgoing tile faces, and corrected hint/trace art.
+  Save version 7 retains these animations and reads earlier saves.
+- Restored Strength Up and other service-88 notifications with the original
+  lettering, portrait-relative placement, rising letters and fade. Corrected
+  their lifetime and dismissal on dialogue taps. The fix applies across
+  episodes, and existing saves retain their remaining notice time.
+- Restored football's original help panels, play legend, fonts, team/score HUD,
+  four-step countdown, target motion and selection effects. Added smooth field
+  movement and native localized result sequences with corrected feedback timing.
+  Save version 8 preserves football animation state and reads earlier saves.

@@ -262,20 +262,20 @@ IDs take priority, including its scripts in the 25000 range. Playback starts at
 last scheduled script. Registers and complete stack backing survive that load,
 while data and PC/SP/FP reset according to the core VM contract.
 
-## Runtime save schema, version 11
+## Runtime save schema, version 12
 
 This is a new format for the reimplementation. No pickle, object deserialization,
 or original executable code is used. JSON fields are:
 
 | Field | Contract |
 | --- | --- |
-| `format`, `version` | `"shs-runtime-save"`, `11` |
+| `format`, `version` | `"shs-runtime-save"`, `12` |
 | `content` | `profile`, `apk_sha256`, `episode_sha256`; must exactly match loaded content |
 | `scene` | Unsigned current script resource ID |
 | `script_sha256` | Hash of the losslessly encoded current program |
 | `vm` | Full mutable machine state, defined below |
 | `engine` | All current `EngineState` dataclass fields, including panel, speaker font history, dialogue/title animation, choice builder, random streams and any active mini game |
-| `pending` | Null, or `{name, details}` for the suspended screen/service |
+| `pending` | Null, or `{name, details}` for the suspended screen/service or terminal episode exit |
 | `remaining_ms` | Null for no timer; otherwise the remaining active choice time in milliseconds |
 | `scene_loads` | Nonnegative number of scheduled script loads |
 
@@ -292,6 +292,8 @@ The `vm` object contains `pc`, `sp`, `fp`, `a`, `b`, `result`, `data`, `stack`,
   remains on the HALT instruction for a halt. Pending argument words remain
   in the stack until the callback completes. Service 91(0) is an application
   gate after an already completed call: its loading screen has `vm.pending=null`.
+  Services 7/63 instead retain their final yield as a terminal audit record;
+  no callback or subsequent instruction is permitted.
 - `opcode_counts` and numeric engine map keys use decimal strings as JSON
   object keys. They are restored to integer keys in memory.
 - `engine` includes numeric/string variables, names and art variants, expression
@@ -420,11 +422,33 @@ screen without replaying the VM or consuming randomness. Current saves retain
 the exact entrance phase. See [TITLE_SCREENS.md](TITLE_SCREENS.md#save-schema-version-11)
 for the field constraints, early-tap state and shared completion side effects.
 
+Version 12 adds the terminal `episode_exit` action for services 7/63, with
+empty details, a validated final VM yield frame and cleared scene state.
+Older unsupported stops recover by dispatching only that retained call.
+The application returns to its main menu and writes a terminal automatic
+checkpoint that masks older Resume entries while preserving the manual slot.
+A subsequent play starts fresh; explicit manual Load remains available.
+Terminal scene checks, persistence behavior and the native/reset-memory
+boundary are specified in [STORY_SERVICES.md](STORY_SERVICES.md#save-schema-version-12).
+
 A save retained at unsupported service 39 now completes the recovered panel
 close through its validated VM frame and follows the saved script queue to
 the next stop. This also applies to version-6 saves; no schema fields change.
 Earlier choices and random draws are not replayed. See
 [STORY_SERVICES.md](STORY_SERVICES.md#dialogue-panel-close-service-39).
+
+Saves stopped at unsupported service 76 now enter the recovered named-dialogue
+screen from their validated pending frame. The retained previous panel supplies
+its outgoing portrait identity; no earlier choices, VM instructions or random
+draws are replayed. Service-76 saves use the existing dialogue animation/name
+fields and keep reveal/page progress. No save version changes; see the
+[named-dialogue contract](STORY_SERVICES.md#named-dialogue-without-a-portrait-service-76).
+
+Saves stopped at service 70 now complete its verified fixed queries, including
+Football Star's selector 10, and execute the following bytecode without
+replaying earlier progress. Selector 11 still requires unmodeled native
+application identity and retains its pending frame. No save fields change;
+see the [query contract](STORY_SERVICES.md#build-and-application-query-service-70).
 
 Loading checks content identity, program identity, machine extents, field
 types, and correspondence between the pending request, saved instruction, and

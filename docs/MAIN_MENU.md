@@ -150,6 +150,7 @@ three labels and 533 for the fourth; the renderer follows that selection.
 No library -> Setup -> Choose/drop APK -> Validate/copy -> Main menu
 Main menu -> Play or episode list -> Episode -> Play/Resume -> Session
 Session -> Pause -> Main menu -> Automatic checkpoint -> Main menu
+Session -> Service 7/63 -> Terminal checkpoint -> Main menu (no Resume)
 Main menu -> Options -> Add EXP files/folder -> Validate/copy -> Episode list
 ```
 
@@ -175,15 +176,24 @@ a different episode constructs fresh renderers and image caches, preventing
 episode-specific IDs from reusing the old episode's images. Unsupported VM
 services remain suspended and visible to the player.
 
+Services 7/63 end the episode, cancel its queued scripts and retire ordinary
+Resume progress. The application stores a terminal automatic checkpoint,
+stops audio and releases that live session. A validated terminal checkpoint
+masks older saves for Resume; the manual F5 slot remains available to explicit
+Load. Starting the episode again creates a fresh session. Other episodes'
+progress is unchanged. A failed checkpoint retains the terminal live session
+and reports the write error. See the [exit contract](STORY_SERVICES.md#episode-exit-services-7-and-63).
+
 | File, relative to the library | Schema / behavior |
 | --- | --- |
 | `player.json` | `{version:1, selected:SHA256, music:bool, sound:bool, order:"episode"\|"title"}`; old files default to episode order |
-| `saves/<episode-sha>.shs-save.json` | Existing manual F5/F9 slot, [runtime save schema](RUNTIME.md#runtime-save-schema-version-11) |
+| `saves/<episode-sha>.shs-save.json` | Existing manual F5/F9 slot, [runtime save schema](RUNTIME.md#runtime-save-schema-version-12) |
 | `saves/<episode-sha>.shs-auto.json` | Automatic checkpoint on menu return and application exit, same schema |
 
 Preferences and saves use temporary files plus atomic replacement. Resume after
 restart chooses the newer automatic/manual file, then validates its full
-profile/APK/episode identity through `Session.load`. A bad save is reported;
+profile/APK/episode identity through `Session.load`. A valid terminal checkpoint
+suppresses Resume rather than falling back to older progress. A bad save is reported;
 it is not silently replaced by a fresh game. New Game has an in-app restart
 confirmation when progress exists. Subsequent checkpoints replace the automatic
 slot; the manual slot is preserved. Existing libraries without preferences use

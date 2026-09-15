@@ -106,6 +106,10 @@ class Session:
         return (self.resources.library.directory / 'saves'
                 / (self.resources.identity['episode_sha256'] + '.shs-save.json'))
 
+    @property
+    def episode_exited(self) -> bool:
+        return self.pending is not None and self.pending.name == 'episode_exit'
+
     def dialogue_page(self):
         """Layout is a session contract, shared by headless and desktop input."""
         action = self.pending
@@ -177,6 +181,8 @@ class Session:
         action = self.pending
         if action is None:
             raise VMError('There is no pending input')
+        if self.episode_exited:
+            raise VMError('The episode has ended; there is no pending input')
         if action.name == 'choice':
             options = action.details
             if (type(value) is not int or not 0 <= value < len(options['values'])
@@ -253,14 +259,14 @@ class Session:
             if action.name == 'vm_pause':
                 self.vm.continue_after_pause()
             else:
-                self.vm.resume(0)
+                self._complete_panel()
             self.pending = None
         else:
             raise VMError(f'Cannot answer {action.name}; its native contract is not implemented')
         return self.advance()
 
     def _complete_panel(self):
-        # 000ab8b8 / 0007efe8, shared by service 8 and service 33. A queued
+        # 000ab8b8 / 0007efe8, shared by title, message and dialogue panels. A queued
         # random transition consumes one libc draw, even before its animation
         # is implemented. 000a6448 returns zero without writing result cells.
         if self.engine.scene_value == 20:
@@ -289,6 +295,8 @@ class Session:
         """Advance active time only; time spent outside the app is excluded."""
         if type(elapsed_ms) is not int or elapsed_ms < 0:
             raise ValueError('Elapsed time must be nonnegative milliseconds')
+        if self.episode_exited:
+            return self.pending
         if self.engine.scene_badge:
             self.engine.scene_badge.tick(elapsed_ms)
         self.engine.notice_ms = max(0, self.engine.notice_ms - elapsed_ms)
@@ -353,7 +361,7 @@ class Session:
         return self.advance()
 
     def snapshot(self) -> dict:
-        return dict(format='shs-runtime-save', version=11,
+        return dict(format='shs-runtime-save', version=12,
                     content=self.resources.identity, scene=self.scene,
                     script_sha256=digest(self.vm.program.to_bytes()),
                     vm=self.vm.snapshot(), engine=asdict(self.engine),
@@ -364,7 +372,7 @@ class Session:
     @classmethod
     def from_snapshot(cls, resources: EpisodeResources, state: dict):
         try:
-            if state['format'] != 'shs-runtime-save' or state['version'] not in range(1, 12):
+            if state['format'] != 'shs-runtime-save' or state['version'] not in range(1, 13):
                 raise SaveError('Unsupported save format or version')
             legacy = state['version'] == 1
             if state['version'] < 11:
@@ -483,13 +491,19 @@ class Session:
                 expected_kind = {'finished': StopKind.HALT, 'vm_pause': StopKind.PAUSE}.get(name, StopKind.YIELD)
                 if request.kind != expected_kind:
                     raise SaveError('Pending screen does not match the VM stop')
-                allowed = {'choice': (1, 4), 'character_picker': (78,), 'word_game': (71,), 'word_grid': (96,), 'football': (94,), 'dialogue': (13, 65), 'text_input': (17, 40),
+                allowed = {'choice': (1, 4), 'character_picker': (78,), 'word_game': (71,), 'word_grid': (96,), 'football': (94,), 'dialogue': (13, 65, 76), 'text_input': (17, 40),
                            'presentation': (8,), 'loading': (91,), 'message_panel': (33,),
+                           'episode_exit': (7, 63),
                            'finished': (None,), 'vm_pause': (None,)}
                 if name != 'unhandled_yield' and (name not in allowed or request.yield_id not in allowed[name]):
                     raise SaveError('Pending screen does not match its native service')
                 if name == 'choice':
                     _validate_choice(details)
+                elif name == 'episode_exit':
+                    closed = deepcopy(engine)
+                    closed.close_episode()
+                    if state['version'] < 12 or details or engine != closed:
+                        raise SaveError('Episode exit does not match its cleared scene')
                 elif name == 'loading':
                     if (engine.loading is None or len(request.args) != 1 or details
                             or engine.loading.blocking != bool(request.args[0])):
@@ -548,6 +562,15 @@ class Session:
                             raise SaveError('Relationship indicators do not match their NPC cache')
                     elif details['visible_character_id'] > 0 and details['presentation_mode'] in (1, 2):
                         raise SaveError('NPC dialogue is missing its relationship state')
+                    if request.yield_id == 76:
+                        if (len(request.args) < 2
+                                or details['speaker'] != engine.resolve_text(session.vm, request.args[0])
+                                or details['raw_text'] != engine.read_text(session.vm, request.args[1])
+                                or details['text'] != engine.substitute(details['raw_text'])
+                                or (details['character_id'], details['visible_character_id'],
+                                    details['expression'], details['mode'], details['presentation_mode'],
+                                    details['theme'], details['relationship']) != (-1, -1, 0, 0, 3, -1, None)):
+                            raise SaveError('Named dialogue does not match its VM arguments')
                 elif name == 'presentation':
                     for key in ('title', 'subtitle'):
                         _typed_value(details[key], str)
@@ -632,9 +655,20 @@ class Session:
                 session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
                 engine.dialogue_animation = None
             if (session.pending and session.pending.name == 'unhandled_yield'
-                    and session.pending.request.yield_id in (33, 39)):
+                    and session.pending.request.yield_id in (7, 33, 39, 63, 70, 76)):
                 # Dispatch only the newly supported call from its validated
                 # frame, without replaying previous input or random draws.
+                if session.pending.request.yield_id in (70, 76) and engine.panel.presentation_mode:
+                    # Unsupported stops discarded their animation, but retained
+                    # the visible panel. Recover its outgoing portrait identity
+                    # for the new dialogue's entrance, without replaying its text.
+                    panel = engine.panel
+                    previous = dict(visible_character_id=panel.character_id,
+                                    presentation_mode=panel.presentation_mode,
+                                    expression=panel.expression, theme=panel.theme)
+                    engine.dialogue_animation = DialogueAnimation(
+                        0, portrait=DialoguePortrait.from_details(previous, engine.character_art_variants))
+                    engine.dialogue_animation.settle()
                 session.pending = None
                 session.advance()
             return session

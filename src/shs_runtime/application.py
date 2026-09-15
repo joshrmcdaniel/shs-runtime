@@ -113,7 +113,7 @@ class Application:
 
     def refresh_saves(self):
         self.saved = {e['id'] for e in self.library.episodes if self.state.resume_path(e['id'])}
-        if self.game:
+        if self.game and not self.game.session.episode_exited:
             self.saved.add(self.game.session.resources.record['id'])
 
     def can_resume(self, episode=None):
@@ -216,24 +216,35 @@ class Application:
             self.game = Desktop(session, audio=self.audio, window=self.window, on_main_menu=self.return_to_menu)
         self.game.music_enabled, self.game.sound_enabled = self.state.music, self.state.sound
         self.game.active = self.active
-        self.game._sync_music()
         self.screen, self.history, self.focus = 'game', [], None
         self.game.screen_token = None
         pygame.key.stop_text_input()
+        if self.game.session.episode_exited:
+            self.return_to_menu()
+            return
+        self.game._sync_music()
         self.refresh_saves()
 
     def return_to_menu(self):
         # Keep the live session even if a filesystem error prevents a checkpoint.
         if self.game.session.engine.word_grid:
             self.game.session.grid_pointer('cancel')
-        self._attempt(lambda: self.state.checkpoint(self.game.session))
+        checkpoint = self._attempt(lambda: self.state.checkpoint(self.game.session))
         # A live session retains its mixer stream and playhead through menu
         # navigation. A fresh Desktop or explicit save load selects a new cue.
         self.game.active = False
-        self.game._sync_music()
+        if not self.game.session.episode_exited:
+            self.game._sync_music()
         if self.audio:
             pygame.mixer.stop()
         self.game.menu_open = False
+        if self.game.session.episode_exited:
+            # Completed sessions cannot resume. The terminal automatic save
+            # masks older progress without deleting the player's manual slot.
+            if self.audio:
+                pygame.mixer.music.stop()
+            if checkpoint is not None:
+                self.game = None
         self.history = []
         self.show('main', remember=False)
         self.refresh_saves()
@@ -371,14 +382,19 @@ class Application:
             return
         if self.screen == 'game':
             self.game.tick(elapsed)
+            if self.game.session.episode_exited:
+                self.return_to_menu()
         else:
             self.menu_age += elapsed
             self.transition_age = min(200, self.transition_age + elapsed)
 
     def render(self):
         if self.screen == 'game':
-            self.game.render()
-            return
+            if self.game.session.episode_exited:
+                self.return_to_menu()
+            else:
+                self.game.render()
+                return
         canvas = self.renderer.draw(self)
         if self.transition_from is not None and self.transition_age < 200 and not self.message and not self.busy:
             layer = canvas.copy()

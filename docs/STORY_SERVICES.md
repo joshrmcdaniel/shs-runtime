@@ -5,6 +5,168 @@ Reference: SHS Android 1.0.9, `libshs09.so`, SHA-256
 These are host-service contracts; VM opcodes and EXP resource IDs are separate
 namespaces. All assets, text and bytecode come from the player's content.
 
+## Episode exit (services 7 and 63)
+
+```text
+arguments : none read; every supplied word is ignored
+aliases   : 7 and 63 enter the same native scene-exit helper
+scene     : dispose panels, cancel script queue, clear numeric state
+input     : none; terminal application handoff
+callback  : none; no next instruction or scheduled script executes
+result    : native dispatcher writes 0, but there is no surviving caller
+resume    : retire the current episode's ordinary resume progress
+```
+
+`0009fe3c` cases `0x07` and `0x3f` enter `0007e614`. It calls `0007e59c`,
+sets scene byte `+0x1b` to 1, then calls `0008a770` on the application.
+The three words used by Football Star are not title/message arguments to
+this service; that display has already happened through service 33.
+
+| Helper | Verified effect |
+| --- | --- |
+| `0007e4c4` | Disposes the scene's panel collection, clears the scene badge ID and queued transition selector |
+| `000805d0(scene+0x1bc4)` | Disposes an auxiliary collection of scene-owned objects |
+| `0009ee48`, `0009f200` | Reset the script hosts and VM execution pointers; clear their pending/loading gates, current script IDs, choice builder and last-input text |
+| `0007e59c` | Also zeros scheduled-script count `+0x3bc`, clears scene gates and calls the game-state reset |
+| `0009623c` | Frees the numeric key/value arrays and zeros the first 200 state bytes (expression defaults); character names/art and replacement strings are outside these cleared ranges |
+| `0007f5f4` | Does not load queued scripts when the scene-exit flag is set |
+| `0008a770` → `0008a6cc` → `000885f4` | Removes the active episode's native resume file and clears application byte `+0x6ac0c` |
+
+`0008a60c` chooses the native resume file by packed episode ID: 0 uses
+`shs_football.sav`, `0x50009` uses `shs_newgirl.sav`, `0xe99` uses
+`shs_season1.sav`, and other IDs use `shs_expansion.sav`. `0008b618` refuses
+to write another scene save while the exit flag is set. `0008b048` likewise
+stops treating the Football Star live scene as resumable after that flag;
+it instead tests the save file. There is no score calculation, reward,
+random draw or episode-unlock assignment in this path.
+
+The runtime exposes terminal `EngineAction('episode_exit')`. Its `completed`
+flag is false because the enclosing application must handle the handoff;
+there is no VM callback to answer. `Session.advance()` and `tick()` retain
+that terminal action, and `answer()` rejects it. The cleared scene contains
+no queued scripts, numeric entries, expression overrides in IDs 0–199,
+panels, active games, loading/choice gates, scene badge, notices, transition
+selector or last-input text. Other mapped state, including RNG streams and
+UI result cells, is not assigned a new value by this exit operation.
+
+The menu application checkpoints the termination and returns to its main
+menu, stopping episode audio and releasing the live session. This uses the
+desktop menu's existing entrance; exact native exit-frame scheduling and
+menu transition animation have not been recovered. A standalone diagnostic
+`Desktop` without a menu displays its terminal episode screen instead.
+
+### Save schema, version 12
+
+Version 12 adds the pending action `{name:"episode_exit", details:{}}`.
+The original final `vm.pending` yield and its entire frame are retained only
+as an audit record, validated against the original program/stack as usual.
+They do not represent the native VM object's post-reset memory and can never
+receive a callback through `Session`. The teardown must already have been
+applied to `engine`; live panels, queued work, uncleared numeric state or a
+choice timer invalidate a terminal checkpoint. No new engine fields are added.
+
+An earlier `unhandled_yield` checkpoint at 7/63 dispatches only its retained,
+validated call. Loading does not execute another instruction, replay earlier
+choices or rewrite the player's save file. The application subsequently writes
+a terminal automatic checkpoint as part of its menu handoff.
+
+The desktop preserves its explicit manual F5 slot. A fully validated terminal
+checkpoint, when newer than other checkpoints for that episode, suppresses
+ordinary Resume instead of falling back to an older manual save. Starting
+the episode then creates a fresh session; an explicit Load can still restore
+the manual slot. New progress replaces the automatic checkpoint normally.
+Invalid terminal files remain visible to Resume so their load error is reported.
+Other episodes' saves are unaffected. If checkpoint writing fails, the menu
+keeps the terminal live session and reports the error so the operation can
+be retried without continuing the VM.
+
+Authored tests cover both call encodings and aliases, ignored arguments,
+scene teardown, canceled script queues, terminal immutability, saved-frame
+validation, old-stop recovery, trace output, menu/audio handoff, checkpoint
+failures, manual-save preservation and new-game startup. An optional test
+executes Football Star scene 25001's original caller at PC 234 through its
+service-33 message at PC 126 and service-7 exit at PC 130 (byte offset 3283,
+arguments `(490,494,1)`). It does not replay the entire episode.
+
+## Named dialogue without a portrait (service 76)
+
+```text
+arguments : speaker_ref:s16, text_ref:s16; extra words ignored
+texts     : packed strings or dynamic slots, with substitutions on BOTH
+panel     : existing dialogue panel 3, presentation mode 3, theme -1
+speaker   : explicit substituted string; not an NPC ID or narrator selection
+portrait  : none; visible character -1, expression 0, no relationship change
+input     : ordinary progressive reveal, then paging and final acknowledgement
+result    : 0 on final acknowledgement; no UI result-cell write
+```
+
+Dispatcher `0009fe3c`, case `0x4c`, finds panel type 3 and calls
+`000ab344(panel,3)`. That selects the layout's mode-3 name area and invokes
+`000ab048(panel,-1,0)`, clearing the visible character and selecting theme -1.
+The dispatcher resolves both strings with `0009f9fc`; `000aa028` writes the
+speaker at panel `+0x3c`, `000a9f84` writes dialogue at `+0x30`, and `000aaf84`
+starts the ordinary display. The host wait flag at `+0x84` retains the whole
+VM frame until the final callback. Service 15 shares this native display tail,
+but its separate argument-prefix form remains unsupported.
+
+This is the shared group-speaker path used by Football Star at scene 25011,
+PC 4303 (byte offset 58996), with arguments `(20059,20064)`: speaker “The team”.
+The later call at PC 4311 uses the same service. No scene number, PC, group
+name, result, branch or dialogue text is hard-coded into the host handler.
+The first argument is always a text reference; service 13's negative mode
+prefix does not apply here. Reference -1 resolves to an empty string, including
+an empty speaker, without turning this screen into narrator mode 4.
+
+The panel keeps its background and uses the normal, full-width dialogue body
+without a portrait indent. Theme -1 selects the yellow `PajamaHipY26` name
+font, gold dialogue skin and `ArialRoundedMTBold16` body. Existing backtick
+color state survives, so emphasized text follows the preceding theme's palette.
+`000a8544` includes a display-only spacing rewrite for “The team”, already part
+of the shared speaker layout. No character's stored name, expression, art or
+relationship cache is modified. See [UI_FIDELITY.md](UI_FIDELITY.md#speaker-labels-and-persistent-font-state)
+for the persistent name-font inputs and the runtime's explicit ink-fit limit.
+
+`000aaa40` uses the same portrait exit, name fade, reveal delay and one-shot
+dialogue wobble as other dialogue calls. Moving from an NPC to service 76
+shrinks the outgoing portrait; two consecutive group-speaker lines both have
+character ID -1, so changing only the speaker string does not create another
+portrait/name entrance. An early tap finishes text reveal without resuming the
+VM. Additional pages retain the call, name layout and box geometry. The final
+acknowledgement returns zero through `000a9868`'s virtual completion path.
+
+The dialogue vtable at `002975b8` places `000ab8b8` at offset `+0x44`, confirming
+the shared transition wrapper used by title and message panels. A queued
+service-16 selector is consumed only after the final page. Selector 20 consumes
+one `lrand48` draw; other selectors consume none. The runtime clears the selector
+and resumes with zero, leaving UI result cells unchanged. This correction applies
+to ordinary services 13/65 as well as 76. Outgoing transition animation and
+native callback frame scheduling remain incomplete.
+
+### Saves and verification
+
+No new save fields or version are needed: service 76 uses the existing panel,
+speaker-font history, `dialogue_animation` and pending dialogue schema. Current
+saves check both strings against the retained VM arguments and require the
+mode-3, no-character/no-relationship configuration. Partially revealed and
+paginated saves keep their clock and byte offsets.
+
+An older `unhandled_yield` save at service 76 dispatches only that validated
+pending call. It does not replay preceding bytecode, choices or random draws.
+Such stops discarded their dialogue animation but retained the previous panel;
+its character/art identity supplies the outgoing portrait for the new entrance.
+The name-font bank is advanced once for the group label. The player's save file
+is not rewritten merely by loading it.
+
+Authored tests cover fixed/dynamic argument counts, ignored extra words,
+substitutions, empty/dynamic strings, portrait-to-group and group-to-NPC
+transitions, repeated group speakers, pagination, exact saved-state restoration,
+invalid frames/saves, and transition random draws only on final acknowledgement.
+Optional player-content tests render the reported original call, pause/resume
+and resize it, then reach the following Coach and team lines. A private local
+checkpoint check preserves the complete VM and both random streams while
+upgrading the reported stop, and reaches the subsequent service-91 loading
+screen at PC 5134. These are bounded checks, not a complete episode playthrough.
+
 ## Message panel (service 33)
 
 ```text
@@ -36,7 +198,8 @@ one `lrand48()` call (`1 + (value & 1)`); other nonzero selectors do not draw.
 `0007efe8(...,4)` clears the queue and `0007f0e8` advances to the callback on
 the next active update. The runtime preserves the random draw and queue clear
 before resuming. The outgoing transition's composition and frame ordering,
-and consumption by other panel types, remain fidelity work. In particular,
+and consumption by other panel types, remain fidelity work. Title and ordinary
+dialogue panels now use this same completion path. In particular,
 this random stream is also used when the next word game deals its options.
 
 ### Presentation
@@ -421,6 +584,76 @@ rotates to -20 in 70 ms, waits 2 ms, then returns to zero over 70 ms. Other
 modes invert the direction and wait 5 ms. The changed-character text path
 also omits its usual additional 120 ms delay. Page turns do not replay the
 one-shot wobble.
+
+## Build and application query (service 70)
+
+```text
+arguments : selector:s16; any additional words are ignored
+result    : signed word in R; removes the complete pending argument frame
+effects   : no UI result-cell, string-slot, timer, audio or random-state writes
+```
+
+`FUN_0009fe3c`, case `0x46`, switches on the first argument. Its fixed results
+are properties of the inspected Android 1.0.9 build. They do not change with
+the operating system running SHS Runtime.
+
+| Selector | Native result | Runtime behavior |
+| --- | --- | --- |
+| 2 | 2 | Complete with 2 |
+| 3 | 6 | Complete with 6 |
+| 6 | `0x7ff5` | Return the existing dynamic string-slot-0 handle |
+| 9 | 1 | Complete with 1 |
+| 11 | Pointer identity comparison described below | Explicit pending stop; no fabricated result |
+| Every other signed-word selector, including 10 | 0 | Complete with 0 |
+
+Selector 6 does not initialize or replace dynamic slot 0 and does not copy
+`last_input` into it. The returned handle refers to that mutable slot just as
+other `0x7ff5` handles do. The meanings of the fixed numeric selectors are not
+assigned speculative names such as platform, locale or API version. Unknown
+service IDs still stop; this zero-default rule belongs only to service 70's
+verified selector switch.
+
+Football Star scene 25001 issues selector 10 at PC 222, byte offset 3451. The
+preceding instruction at PC 221 pushes 10. After completion, the original
+instructions push R and 2, compare for equality, and branch on zero from
+PC 226 to PC 234. Returning the native zero therefore permits the original
+script to choose its path; the runtime does not replace the branch or seek
+past the service.
+
+### Native application identity boundary
+
+Selector 11 compares the object pointers at application `+0x68ed4` and
+`+0x6ab24`; it does not compare EXP titles or numeric pack/episode IDs.
+`FUN_0008dcc8` installs the active episode in the first field. The second is
+the separate episode slot populated by `FUN_0008e18c` in application state
+108, following the native weekly-episode flow. `FUN_0008c184` restores an
+expansion save by looking in the ordinary episode collection, then falling
+back to that separate object if its numeric identity matches.
+
+The compatible launcher imports local files and does not model the native
+weekly-download slot or its identity/lifetime. A local episode's imported
+status, bundled status, selected filename or largest episode ID cannot safely
+stand in for that comparison. Selector 11 therefore retains its full VM
+frame as `unhandled_yield`, with the selector and reason exposed. It requires
+further application-state modeling before it can return a faithful boolean.
+See the [main-menu contract](MAIN_MENU.md#1-native-application-states-and-commands).
+
+### Saved stops and verification
+
+No save fields or format version change. A save at an unsupported service-70
+call is restored through its validated frame. A fixed selector completes
+once, then the VM runs its following instructions normally. Previous choices,
+state writes and random draws are not replayed. If the stopped query followed
+dialogue, the retained panel supplies the previous portrait identity for the
+next dialogue entrance. Selector 11 remains stopped after restoration.
+
+Authored tests cover all fixed outcomes, zero-default cases at the signed-word
+boundaries, fixed/dynamic argument counts, extra argument removal, a live
+slot-0 handle, unchanged host state, saved-stop recovery, dialogue continuity,
+and explicit rejection of a missing selector. An optional original-content
+check executes Football Star's PC 221–226 instructions and verifies the
+branch to PC 234. This is an isolated call/branch check, not a replay of the
+player's route to that point; original game assets are not test fixtures.
 
 ## Optional device request and native stub (services 82, 99)
 

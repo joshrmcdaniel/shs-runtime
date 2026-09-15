@@ -13,10 +13,15 @@ See [VM yield ABI](VM_SPEC.md#7-yield--host-call-abi) for the complete transitio
 - `bool(a)` is `a != 0`; a byte argument may instead truncate a word.
 - “Arguments read” describes accesses visible in the inspected implementation. It is not an assertion that the native reader checks exact arity or accepts every larger frame.
 - **C**: current Python host completes this operation, with any stated limitation.
-- **P**: Python exposes a recognized pending event; the desktop/session implements the supported input callback.
+- **P**: Python exposes a recognized pending event; the desktop/session implements the supported input callback or terminal application handoff.
 - **X**: Python leaves the service as `unhandled_yield`, even when a native effect is partly known.
 
 A return of 0 from the C dispatcher does not by itself mean successful completion: pending operations also return 0 to their caller. The pending flags and VM status distinguish those cases. The internal sentinel `0x80000000` is not a script return value.
+
+Services 7/63 terminate the scene and reset its VMs. Their zero dispatcher
+result has no surviving script caller. The runtime retains their final frame
+for terminal-checkpoint validation; it never resumes or consumes that frame
+as an ordinary input callback.
 
 ## 2. Complete dispatcher inventory
 
@@ -31,7 +36,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 4 (`04`) | bool(a1) | Attaches incremental choices, clears the builder pointer, and waits. a1 requests shuffled order. | mapped selection | P (unshuffled only) |
 | 5 (`05`) | a1, low byte of a2 | Writes a byte at game-state offset a1 via `FUN_00095d48`; service 13 reads these bytes as character expression defaults. | 0 | C (expression byte) |
 | 6 (`06`) | a1, a2 destination | Gets the named character string via `FUN_00096c64`; writes to VM address a2 or, for negative a2, dynamic slot `~a2`. | address / handle | X |
-| 7 (`07`) | none read here | Calls scene helper `FUN_0007e614`, same as 63; full effect unresolved. | 0 | X |
+| 7 (`07`) | none read; all supplied words ignored | Ends the episode through `0007e614`: dispose panels, reset hosts/numeric state, cancel scheduled scripts and retire native resume progress. [Contract](STORY_SERVICES.md#episode-exit-services-7-and-63). | terminal scene exit | P (terminal) |
 | 8 (`08`) | a1 title ref, T(2), a3, a4 | Episode/week title card, UI type 16; negative a1 means empty title, a3 is the background asset, a4 a retained flag. Original fonts, layout, entrance and input gate; Android promotional branches remain unmodeled. See [TITLE_SCREENS.md](TITLE_SCREENS.md). | 0 on acknowledgement | P |
 | 9 (`09`) | helper-defined | Builds `pollID=...&upType=...` request via `FUN_0009f0cc`, invokes UI/network path, and waits. Old background label is incorrect. | pending | X |
 | 10 (`0a`) | a1, bool(a2) | Schedules script resource a1 and its flag through `FUN_0007b44c`; LIFO consumption after HALT. | 0 | C |
@@ -40,7 +45,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 13 (`0d`) | optional negative mode, text, character, optional override | Dialogue path; raw text reference is subsequently substituted by the panel. Section 4 describes argument positions. | pending | P |
 | 14 (`0e`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 15 (`0f`) | optional negative prefix, then T(text1), T(text2) | Sets panel mode 3, two substituted text fields, starts display, waits; shares tail with 76. | pending | X |
-| 16 (`10`) | a1 | Queues a screen-transition selector at scene `+0x1c1c`. Services 8/33 consume it on acknowledgement; selector 20 draws a libc random bit for transition 1/2. Other panel paths remain partial. | 0 | C (queue; callbacks partial) |
+| 16 (`10`) | a1 | Queues a screen-transition selector at scene `+0x1c1c`. Title, message and dialogue panels (8/13/33/65/76) consume it on final acknowledgement; selector 20 draws a libc random bit for transition 1/2. Other panel paths remain partial. | 0 | C (queue; callbacks partial) |
 | 17 (`11`) | T(1), T(2), T(3) | Text input: title, prompt, initial value; UI factory type 15, same as 40. | string handle 0x7ff5 | P |
 | 18 (`12`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | C (zero args) |
 | 19 (`13`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
@@ -87,20 +92,20 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 60 (`3c`) | t(1) | Name/string lookup through `FUN_000966bc`; domain and missing-value behavior unresolved. | word | X |
 | 61 (`3d`) | character a1, destination a2 | Copies character name from `FUN_00096c64` to packed VM word memory. | 0 | X |
 | 62 (`3e`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
-| 63 (`3f`) | none read here | Calls `FUN_0007e614`, same as 7; full scene effect unresolved. | 0 | X |
+| 63 (`3f`) | none read; all supplied words ignored | Same episode-exit path as 7, including scene teardown and resume retirement. | terminal scene exit | P (terminal) |
 | 64 (`40`) | character, t(name) | Assigns raw character name via `FUN_00096144`, without service 49 case conversion. | 0 | C |
 | 65 (`41`) | character a1, t(2), override a3 | Updates panel character/expression and dialogue, then waits. Has Android promotional-text special cases and an early-return path. | pending / special early return | P (ordinary dialogue path) |
 | 66 (`42`) | all arguments as weights | Weighted random selection: sum weights, PRNG remainder, return first index whose cumulative sum exceeds the remainder; invalid weights not specified. | zero-based index | X |
 | 67 (`43`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 68 (`44`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 69 (`45`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
-| 70 (`46`) | a1 selector | Build-specific query: 2→2, 3→6, 6→0x7ff5, 9→1, 11→application-pointer equality; other selectors→0. | word | X |
+| 70 (`46`) | a1 selector; extra words ignored | Android build query: 2→2, 3→6, 6→0x7ff5, 9→1; remaining selectors return 0 except 11, which compares native current/weekly-episode objects and stays unsupported. [Contract](STORY_SERVICES.md#build-and-application-query-service-70). | word | C (fixed selectors); X (11) |
 | 71 (`47`) | 8 words: title, description, good/bad lists, duration ms, character, portrait mode, refresh ms | Timed word choices; raw text, libc random deals, ±1 scoring clamped at zero. See [mini-game schema](MINIGAMES.md#3-service-71-timed-word-choices). | score in R and UI cell 0 | P |
 | 72 (`48`) | character, art base ID | Initializes five character-art slots, probes IDs base+1..base+4 and falls back to base when absent. | 0 | C (resource probes in Session) |
 | 73 (`49`) | a1 character | Returns first art word at game state `+0xb1c + 10*a1` via `FUN_00095c48`. | word | C |
 | 74 (`4a`) | a1 | Stores numeric UI default `DAT_002af012` via `FUN_000a7d14`; not a fade opcode. | 0 | C |
 | 75 (`4b`) | a1 | Stores numeric UI default `DAT_002af010` via `FUN_000a7cf8`; not a fade opcode. | 0 | C |
-| 76 (`4c`) | T(1), T(2) | Sets panel mode 3, two text fields, starts display, waits; shares tail with 15. | pending | X |
+| 76 (`4c`) | T(1) speaker, T(2) dialogue; extra words ignored | Named dialogue in panel mode 3, no portrait, theme -1. Uses ordinary name layout, text reveal, paging and final callback. See [STORY_SERVICES.md](STORY_SERVICES.md#named-dialogue-without-a-portrait-service-76). | 0 on final acknowledgement | P |
 | 77 (`4d`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 78 (`4e`) | T(1), count a2, word-address a3 | Portrait selector copies 1–5 IDs; separate confirmation returns the chosen original array index. See section 4.3. | index in R and UI cell 0 | P |
 | 79 (`4f`) | a1 resource | Selects music request for 8201–8232, otherwise SFX path; native playback through `FUN_000a3bc8`. | 0 | C (basic audio) |
@@ -276,6 +281,11 @@ subtitle: So it begins...
 This follows 2,561 executed instructions and one LIFO scene load, not a backward scan of nearby pushes. See `new-girl-start-trace.json`.
 
 ### 4.2 Services 13 and 65: dialogue
+
+Service 76 uses the same dialogue panel with an explicit speaker string,
+mode 3 and no portrait. It bypasses NPC name/art lookup while retaining the
+ordinary reveal, pagination and callback. See its
+[frame and state contract](STORY_SERVICES.md#named-dialogue-without-a-portrait-service-76).
 
 Service 13's normal argument prefix is `(text_ref, character_id)`. If its first word is negative, the prefix becomes `(mode, text_ref, character_id)`; recognized special modes are -2 and -3, and other negative mode values are normalized in the native path. An optional following word overrides the character's stored expression when it is not -1. The native code resolves raw text, applies mode-specific decorations, looks up character state, sets the panel, and waits.
 

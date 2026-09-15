@@ -1,8 +1,8 @@
 """Verified subset of the native yield dispatcher for headless tracing.
 
 These handlers reconstruct game state. Presentation requests and unknown
-handlers remain pending; the caller must supply their eventual result.
-See docs/KIWI_NATIVE.md for native addresses and current limitations.
+handlers remain pending; episode exits are terminal application handoffs.
+See docs/ENGINE_ABI.md for native addresses and current limitations.
 """
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -84,6 +84,23 @@ class EngineState:
     speaker_names: SpeakerNames = field(default_factory=SpeakerNames)
     title_screen: TitleScreen | None = None
 
+    def close_episode(self):
+        """FUN_0007e614/0007e59c: dispose scene UI and cancel its work."""
+        self.scheduled_scripts.clear()
+        self.numbers.clear()  # FUN_0009623c frees the numeric key/value arrays.
+        # The same reset zeros 200 expression bytes, but retains names, art,
+        # replacement strings, dynamic strings, UI results and random streams.
+        for character in list(self.character_expressions):
+            if 0 <= character < 200:
+                del self.character_expressions[character]
+        self.panel = PanelState()
+        self.dialogue_animation = self.scene_badge = None
+        self.word_game = self.word_grid = self.football = None
+        self.character_picker = self.loading = self.message_panel = self.title_screen = None
+        self.choice_builder = None
+        self.next_dialogue_notice = self.notice = self.last_input = ''
+        self.notice_ms = self.scene_value = 0
+
     @staticmethod
     def number_key(owner: int, key: int) -> int:
         # Native addition of signed short operands, not OR of unsigned halves.
@@ -103,14 +120,21 @@ class EngineState:
         mode = 1 if character == self.ui_defaults.get(74, -1) else 2
         return mode, character, self.numbers.get(self.number_key(character, 651), 0)
 
-    def present_dialogue(self, character: int, expression: int, raw_text: str, mode: int, *, settled_relationship=False):
-        """Keep script prefixes separate from the four native panel modes."""
+    def present_dialogue(self, character: int, expression: int, raw_text: str, mode: int, *,
+                         settled_relationship=False, speaker: str | None = None):
+        """Keep script prefixes separate from panel modes and explicit speakers."""
         text = '(' + raw_text + ')' if mode == -2 else '`' + raw_text + '`' if mode == -3 else raw_text
         text = self.substitute(text)
-        presentation, visible, theme = self.dialogue_presentation(character, expression)
-        if presentation in (1, 2):
-            self.panel.speaker = self.substitute(self.character_names.get(character, ''))
-        # Native mode 3 keeps the previous name object; mode 4 hides it.
+        if speaker is None:
+            presentation, visible, theme = self.dialogue_presentation(character, expression)
+            if presentation in (1, 2):
+                self.panel.speaker = self.substitute(self.character_names.get(character, ''))
+        else:
+            # Service 76: ab344(3) -> ab048(-1,0), then aa028(name).
+            # This is named dialogue without an NPC or portrait, not narration.
+            presentation, visible, theme = 3, -1, -1
+            self.panel.speaker = self.substitute(speaker)
+        # The name remains on the panel; narrator mode 4 only hides it.
         speaker = '' if presentation == 4 else self.panel.speaker
         if theme in (1, 2):
             self.panel.emphasis_theme = theme
@@ -242,12 +266,31 @@ class EngineState:
             vm.resume(result)
             return EngineAction(action_name, request, True, dict(result=result, **details))
 
+        if y in (7, 63):
+            # Both cases enter 0007e614 without reading any arguments. The
+            # native scene destroys its VMs; there is no script continuation.
+            # Retain this final frame for diagnostics/save validation, never
+            # as a callback that could run the following instruction.
+            self.close_episode()
+            return EngineAction('episode_exit', request, False)
         if y == 91:
             need(1)
             self.loading = LoadingScreen(bool(args[0]), self.loading.elapsed_ms if self.loading else 0)
             if not self.loading.blocking:
                 vm.resume(0)  # The call completes, but host +0x118 still gates execution.
             return EngineAction('loading', request, False)
+        if y == 70:
+            at_least(1)
+            selector = args[0]
+            if selector == 11:
+                # 0009fe3c compares the current episode object with the native
+                # weekly-episode slot. Local imports do not establish that identity.
+                return EngineAction('unhandled_yield', request, False, dict(
+                    selector=selector, reason='Service 70 selector 11 needs native weekly-episode state'))
+            # Android 1.0.9 constants; all other selectors explicitly return 0.
+            # Selector 6 returns the existing dynamic slot, without writing it.
+            result = {2: 2, 3: 6, 6: 0x7ff5, 9: 1}.get(selector, 0)
+            return complete('query_build', result, selector=selector)
         if y == 0:
             at_least(1)
             slot, format_at = (1 - args[0], 1) if args[0] < 0 else (0, 0)
@@ -539,6 +582,11 @@ class EngineState:
             if not 0 <= args[0] < len(self.result_cells) or self.result_cells[args[0]] is None:
                 raise VMError('Read of uninitialized UI result cell')
             return complete('get_ui_result', self.result_cells[args[0]])
+        if y == 76:
+            at_least(2)
+            speaker, text = (self.read_text(vm, ref) for ref in args[:2])
+            return EngineAction('dialogue', request, False,
+                                self.present_dialogue(-1, 0, text, 0, speaker=speaker))
         if y in (13, 65):
             if len(args) < 2:
                 raise VMError(f'yield 13 at pc {request.pc}: incomplete dialogue arguments')

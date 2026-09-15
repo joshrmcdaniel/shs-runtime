@@ -33,7 +33,8 @@ Accepted input reaches `FUN_000ab8b8` / `FUN_0007efe8`. If the queued scene
 transition selector is 20, the native path consumes one `lrand48` draw before
 choosing a transition. The runtime preserves this draw, clears `scene_value`,
 and resumes through callback `FUN_000a6448` with zero. It does not write a UI
-result cell. Service 33 shares this completion path. Transition visuals still
+result cell. Message service 33 and dialogue services 13/65/76 share this
+completion path. Transition visuals still
 need implementation; early taps, redraws and save restoration do not consume
 that random draw or complete the call.
 
@@ -166,7 +167,7 @@ Versions 1–10 have no entrance history. A pending title migrates to
 readable, immediately acknowledgeable state. Other screens receive null.
 Restoring version 11 retains the exact animation phase and gate without
 replaying the VM, resetting timers or consuming random draws. See the full
-[runtime save schema](RUNTIME.md#runtime-save-schema-version-11).
+[runtime save schema](RUNTIME.md#runtime-save-schema-version-12).
 
 ## Implementation and verification boundary
 

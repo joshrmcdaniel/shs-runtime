@@ -37,7 +37,7 @@ class Desktop:
         pygame.font.init()
         self.window = window if window is not None else pygame.display.set_mode(SIZE, pygame.RESIZABLE)
         self.on_main_menu = on_main_menu
-        pygame.display.set_caption('SHS Runtime — ' + session.resources.record['titles'][0])
+        pygame.display.set_caption('Surviving High School — ' + session.resources.record['titles'][0])
         # Cocoa's default opaque surface still carries an alpha bitmask.
         # Explicit RGB avoids its incorrect blending of translucent layers.
         self.canvas = pygame.Surface(SIZE).convert(32)
@@ -318,7 +318,7 @@ class Desktop:
             pygame.draw.rect(self.canvas, (49, 62, 84), pygame.Rect(24, y, 432, 48), border_radius=6)
             y = self._text(details.get('draft', '') + '|', 36, y + 12, 408) + 22
             y = self._text('Type your answer, then press Enter.', 24, y, 432, font=self.small, color=MUTED)
-        elif action.name == 'finished':
+        elif action.name in ('finished', 'episode_exit'):
             y = self._text('Episode complete', 24, y, 432, font=self.heading, color=ACCENT)
         elif action.name == 'unhandled_yield':
             y = self._text('This part is not supported yet', 24, y, 432, font=self.heading, color=ACCENT)
