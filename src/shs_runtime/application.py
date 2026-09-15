@@ -215,8 +215,8 @@ class Application:
             # accidentally reusing the previous episode's cached artwork.
             self.game = Desktop(session, audio=self.audio, window=self.window, on_main_menu=self.return_to_menu)
         self.game.music_enabled, self.game.sound_enabled = self.state.music, self.state.sound
-        self.game.music_token = None
         self.game.active = self.active
+        self.game._sync_music()
         self.screen, self.history, self.focus = 'game', [], None
         self.game.screen_token = None
         pygame.key.stop_text_input()
@@ -227,9 +227,12 @@ class Application:
         if self.game.session.engine.word_grid:
             self.game.session.grid_pointer('cancel')
         self._attempt(lambda: self.state.checkpoint(self.game.session))
+        # A live session retains its mixer stream and playhead through menu
+        # navigation. A fresh Desktop or explicit save load selects a new cue.
+        self.game.active = False
+        self.game._sync_music()
         if self.audio:
             pygame.mixer.stop()
-            pygame.mixer.music.stop()
         self.game.menu_open = False
         self.history = []
         self.show('main', remember=False)

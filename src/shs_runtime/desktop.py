@@ -8,6 +8,7 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
 
 from .content import ContentError
+from .audio import music_cue
 from .desktop_text import BitmapTextRenderer
 from .desktop_dialogue import DialogueRenderer
 from .desktop_choice import ChoiceRenderer
@@ -15,6 +16,8 @@ from .desktop_grid import GridRenderer
 from .desktop_football import FootballRenderer
 from .desktop_picker import CharacterPickerRenderer
 from .desktop_loading import LoadingRenderer
+from .desktop_message import MessageRenderer
+from .desktop_title import TitleRenderer
 from .fonts import TextStyle
 from .runtime import SaveError, Session
 from .ui_assets import ImagePack, Rect
@@ -49,6 +52,8 @@ class Desktop:
         self.football_renderer = FootballRenderer(session.resources, self.story_text, self.dialogue_renderer)
         self.picker_renderer = CharacterPickerRenderer(session.resources, self.story_text, self.dialogue_renderer)
         self.loading_renderer = LoadingRenderer(session.resources, self.story_text, self.dialogue_renderer)
+        self.message_renderer = MessageRenderer(session.resources, self.story_text, self.dialogue_renderer)
+        self.title_renderer = TitleRenderer(session.resources, self.story_text, self.dialogue_renderer)
         self.picker_pointer_down = False
         self.images = OrderedDict()
         self.buttons = []
@@ -58,6 +63,8 @@ class Desktop:
         self.message_until = 0
         self.error = None
         self.music_token = None
+        self.music_loaded = False
+        self.music_paused = False
         self.sound_serial = session.engine.sound_serial
         self.audio = False
         self.music_enabled = self.sound_enabled = True
@@ -152,21 +159,41 @@ class Desktop:
             portrait = pygame.transform.smoothscale(portrait, (int(width * scale), int(height * scale)))
             self.canvas.blit(portrait, (SIZE[0] - portrait.get_width() - 22, bottom - portrait.get_height()))
 
-    def _sync_audio(self):
+    def _sync_music(self):
+        """Apply the requested cue and hold its playhead while play is inactive."""
         if not self.audio:
             return
         engine = self.session.engine
         token = (engine.music_id, engine.music_flag, self.music_enabled)
         if token != self.music_token:
             self.music_token = token
+            self.music_loaded = self.music_paused = False
             try:
                 pygame.mixer.music.stop()
                 if engine.music_id >= 0 and self.music_enabled:
-                    pygame.mixer.music.load(BytesIO(self.session.resources.read_asset(engine.music_id)))
+                    cue = music_cue(engine.music_id)
+                    pygame.mixer.music.load(BytesIO(self.session.resources.read_asset(cue.asset_id)))
                     # Play once until native repeat/fade semantics are recovered.
-                    pygame.mixer.music.play()
+                    pygame.mixer.music.play(start=cue.start_ms / 1000)
+                    self.music_loaded = True
             except (ContentError, pygame.error) as error:
                 logging.warning('Music %s cannot be played: %s', engine.music_id, error)
+        paused = self.menu_open or not self.active
+        if self.music_loaded and paused != self.music_paused:
+            self.music_paused = paused
+            try:
+                if paused:
+                    pygame.mixer.music.pause()
+                else:
+                    pygame.mixer.music.unpause()
+            except pygame.error as error:
+                logging.warning('Music %s cannot change pause state: %s', engine.music_id, error)
+
+    def _sync_audio(self):
+        if not self.audio:
+            return
+        self._sync_music()
+        engine = self.session.engine
         if engine.sound_serial != self.sound_serial:
             self.sound_serial = engine.sound_serial
             if not self.sound_enabled:
@@ -190,10 +217,11 @@ class Desktop:
                 pygame.key.stop_text_input()
         self.canvas.fill((14, 20, 32))
         details = action.details if action else {}
-        if action and action.name in ('word_grid', 'football', 'character_picker', 'loading') and not self.error:
+        if action and action.name in ('word_grid', 'football', 'character_picker', 'loading', 'message_panel', 'presentation') and not self.error:
             try:
                 renderer = {'word_grid': self.grid_renderer, 'football': self.football_renderer,
-                            'character_picker': self.picker_renderer, 'loading': self.loading_renderer}[action.name]
+                            'character_picker': self.picker_renderer, 'loading': self.loading_renderer,
+                            'message_panel': self.message_renderer, 'presentation': self.title_renderer}[action.name]
                 buttons = renderer.draw(self.canvas, self.session)
                 self.buttons = [(pygame.Rect(*(round(value * 1.5) for value in rect)), command)
                                 for rect, command in buttons]
@@ -319,11 +347,13 @@ class Desktop:
         football = self.session.engine.football
         dialogue = self.session.engine.dialogue_animation
         picker = self.session.engine.character_picker
+        title = self.session.engine.title_screen
         return (id(self.session), self.session.scene, self.session.vm.steps_executed,
                 details.get('page_start', 0), game.round if game else None,
                 grid.round if grid else None, (football.round, football.phase) if football else None,
                 (dialogue.finish_requested, dialogue.complete) if dialogue else None,
-                tuple(picker.order) if picker else None)
+                tuple(picker.order) if picker else None,
+                (title.reveal_width == 320, title.ready) if title else None)
 
     def _present(self):
         engine = self.session.engine
@@ -352,9 +382,9 @@ class Desktop:
         color = (69, 107, 176) if badge.text == 'Free Time' else (223, 163, 52)
         text = self.story_text.layout('ArialRoundedMTBold16', badge.text, 110,
                                       TextStyle(14, 1, color))
-        x, y, scale = badge.text_position
+        x, y, scale = badge.text_origin
         self.story_text.draw_layout(layer, 'ArialRoundedMTBold16', text,
-                                   x - text.width * scale / 2, 60 - y - 10 * scale, scale=scale)
+                                   x, y, scale=scale)
         # 200ms MoveTo from x=-width/2 to center x=100. Ad-free top inset=10.
         left = -171 + (100 + 171 / 2) * badge.elapsed_ms / 200
         self.canvas.blit(pygame.transform.smoothscale(layer, (257, 90)), (round(left * 1.5), 15))
@@ -386,8 +416,10 @@ class Desktop:
             if self.session.engine.word_grid:
                 self.session.grid_pointer('cancel')
             self.menu_open = True
+            self._sync_music()
         elif kind == 'resume':
             self.menu_open = False
+            self._sync_music()
         elif kind == 'main_menu' and self.on_main_menu:
             self.on_main_menu()
         elif kind == 'save':
@@ -412,7 +444,7 @@ class Desktop:
                 self._attempt(lambda: self.session.answer(command[1] if kind == 'choose' else None))
             if kind == 'choose' and action and action.name in ('choice', 'word_game'):
                 self._attempt(lambda: self.session.answer(command[1]))
-            elif kind == 'continue' and action and action.name in ('presentation', 'dialogue', 'text_input'):
+            elif kind == 'continue' and action and action.name in ('presentation', 'dialogue', 'text_input', 'message_panel'):
                 self._attempt(lambda: self.session.answer(action.details.get('draft', action.details.get('default', '')))
                               if action.name == 'text_input' else self.session.answer())
             elif action and action.name == 'football' and kind in ('continue', 'choose'):
@@ -423,12 +455,13 @@ class Desktop:
             return False
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             if self.menu_open:
-                self.menu_open = False
+                self.command(('resume',))
                 return True
             self.command(('menu',))
             return True
         if event.type in (pygame.WINDOWFOCUSLOST, pygame.WINDOWFOCUSGAINED):
             self.active = event.type == pygame.WINDOWFOCUSGAINED
+            self._sync_music()
             self.picker_pointer_down = False
             if not self.active and self.session.engine.word_grid:
                 self.session.grid_pointer('cancel')

@@ -144,8 +144,115 @@ and sprite transform. `FUN_0004c7b8` initially sets the gap to negative nominal
 height; dialogue setup then overrides it with 7. Setting nominal height does
 not resample the glyph atlas or proportionally scale advances. The name path
 normally applies an additional 0.9 sprite scale, with numerous string-length,
-panel-mode, and named-character exceptions. Those exceptions are not yet
-implemented by the desktop.
+panel-mode, and named-character exceptions. `speaker_names.py` implements the
+branches of `FUN_000a7fa8` / `FUN_000a8544`, including their persistent inputs.
+
+### Speaker labels and persistent font state
+
+These rules depend on the font object's history, not just the current name.
+`FUN_0007cbbc` initializes each of the four name labels with `SHS`, a zero
+content size, nominal height 16, gap -16 and one measured line. The mode-2
+large-name branch changes the selected object's gap to 8. Later short names
+do **not** reset it. Each colored font has its own content size, line count
+and indent array. `FUN_000a79a8` removes labels from their parent without
+resetting these objects; dialogue panel close therefore retains the state.
+
+`FUN_000a7fa8` selects layout-17 rectangles as follows:
+
+| Presentation mode | Small rectangle | Large rectangle | Large-name test |
+| --- | --- | --- | --- |
+| 1, portrait on left | `0x2e` | `0x25` | Measured wrapped height exceeds small rectangle height |
+| 2, portrait on right | `0x4c` | `0x43` | Unwrapped advance width exceeds small rectangle width |
+| 3, no portrait | `0x6a` | `0x61` | Measured wrapped height exceeds small rectangle height |
+
+The large branch sets panel `extra=40`, otherwise 8. Modes 1/2 subtract 40
+from the large rectangle's Y. Mode 1 adds 1 to X; mode 2 adds 1 for eight-byte
+names, otherwise 5. Measurement uses the theme-2/3 font when selected and the
+default font otherwise: theme -1 measures with the default but draws yellow.
+Height measurement updates that measuring object's line count. Mode 2's width
+measurement does not; its later line-count tests observe the previous name.
+
+Below, `w,h` are the selected rectangle dimensions, `n` is the original name's
+Latin-1 byte length and `c` is the selected drawing object's line count at the
+branch. Branches are ordered. Scale starts at 0.9 on each call.
+
+| Mode / branch | Label content size | Scale / alignment |
+| --- | --- | --- |
+| 1, `Brendizzle` | Retain the previous size | 0.9 |
+| 1, `c < 2` | `(w+20, h+30)` | 0.9 |
+| 1, otherwise | `(w+80, h+30)` if `n < 14`, else `(w+40, h+30)` | 0.8 |
+| 2, `Howard's Mom` | `(235, h+32)` | 0.9, `0x3d` |
+| 2, `Howard's Dad` | `(223, h+32)` | 0.9, `0x3d` |
+| 2, `French Teacher` | `(225, h+50)` | 0.8, `0x3d` |
+| 2, `Neighbor's Wife` | `(w+80, h+60)` | 0.8, `0x3d` |
+| 2, `n == 8` | `(w, h+34)` | 0.9 |
+| 2, `n == 11`, including Mr. Russell | `(w, h+82)` | 0.9, `0x3d` |
+| 2, `c < 2` | `(w+20, h+32)` | 0.9, `0x19` |
+| 2, `n < 19` | `(w+80, h+30)` | 0.8, or 0.7 for `Spud The Stud` |
+| 2, otherwise | `(300, h+32)` | 0.7 |
+| 3, `n == 8` | `(w+20, h+34)` | 0.9, `0x1a` |
+| 3, `n < 16` | `(w+20, h+20)` | 0.9, `0x1a` |
+| 3, otherwise | `(580, h+30)` | 0.6, `0x1a` |
+
+Mode 1 uses flags `0x1b` for the small branch, `0x19` for large, and indents
+`[0,20]`. Mode 2 starts with `0x1a` for small, `0x19` for large, and sets
+indents `[0,5]`. Only mode 3's middle branch clears the previous indents;
+its eight-byte and long branches retain them. Small mode-1 labels subtract
+23 from node X when truncated unwrapped width is below 127; mode 2 adds 23
+under the same width condition.
+
+The native routine also rewrites spacing within the panel's retained string:
+
+| Branch | Original → displayed string |
+| --- | --- |
+| Mode 2, eight bytes | `The Boss` → `Th e Boss ` (including trailing space) |
+| Mode 2, `c < 2` | `The Mayor` → `Th e Mayor`; `Judge Tigh` → `Judge Ti gh`; `Animal Thief` → `Animal Th ief` |
+| Mode 2, `c >= 2` and `n < 19` | `Spud The Stud` → `Spud Th e Stud` |
+| Mode 3, eight bytes | `The team` → `Th e team` |
+| Mode 3, middle branch | `The Whole Room` → `Th e Whole Room`; `The Crowd` → `Th e Crowd` |
+
+These are verified literal comparisons in the binary, not new episode-specific
+overrides. Character metadata and pending source text remain intact. Mode 3
+can retain the preceding panel string, including its spacing rewrite.
+
+`fonts.layout_label` implements the relevant `FUN_0004dc20` flags: low bits
+1/2/3 mean left/center/right; `0x08` means vertical center, `0x0c` bottom;
+`0x10` wraps, and `0x20` limits drawn lines to the content height. Alignment
+uses nominal line boxes and accounts for the absolute per-line indent.
+Bottom alignment sets local GL text Y to `H - measured_height - 4` and adds
+four to the clipping height. With node anchor `(0.5,0.5)` and scale `s`, its
+downward screen origin before per-glyph offsets is
+`480 - node_y + s * (measured_height + 4 - H/2)`.
+Vertical center instead gives `480 - node_y + s * measured_height/2`.
+The previous implementation applied center alignment to bottom-aligned names,
+placing a fresh Mr. Russell label 47.25 logical pixels too low.
+
+`Session` advances name-font state once per dialogue. Rendering and page turns
+use a copy of the state before that dialogue, so their frequency cannot change
+future placement. Save version 10 retains both banks and validates the current
+layout against them; see [RUNTIME.md](RUNTIME.md#runtime-save-schema-version-11).
+
+**Compatibility correction, not verified native behavior:** applying these
+native rules with the current imported-font renderer still permits overlaps.
+Nominal name height is 16 although visible glyph rectangles can exceed 30;
+retained spacing can also lower a later short name into the dialogue. After
+native layout, `fit_speaker_ink` separates overlapping rows, shrinks ink only
+when it exceeds the space beside the portrait, and minimally translates it
+inside that space and above the body. It uses glyph bounds for every name,
+with no additional character-name exceptions. The body boundary accounts for
+glyphs anywhere in the dialogue, keeping the name fixed across page turns.
+This changes drawing only: it does not feed back into native font history,
+body rectangles, pagination, VM arguments, results or random state.
+
+Authored tests cover all presentation modes and font themes, long and multiline
+names, preceding font-state changes, saved pages, invalid state and migration.
+An optional local-content check covers Football Star's portrait-bearing roster
+and a parents-then-teachers sequence using the player's original fonts.
+Rendered parent/teacher checkpoints and save restoration were checked locally.
+These checks establish non-overlap in this renderer; exact native pixel
+equivalence still requires comparison with a running original game. Shared
+kerning and measurements performed by other UI paths, such as `FUN_000d9038`,
+are not yet included in the dialogue font-history model.
 
 ### Text input and wrapping
 
@@ -223,7 +330,9 @@ The initial ordinary backtick color is (254,53,0); the semicolon color is
 Color modulates the original atlas RGB while preserving its alpha and colored
 variants. The engine now retains the last theme-1/2 backtick selection through
 other themes and serializes it. Other font-object lifetime effects, including
-cross-object kerning and changes to name line gaps, remain incomplete.
+cross-object kerning and interactions with other UI widgets, remain incomplete.
+Dialogue name gaps, line counts, sizes and indents are retained as specified
+above.
 
 ## Dialogue panel composition
 
@@ -312,10 +421,11 @@ follow-up.
 
 Names use the layout's mode-specific name rectangles and the sizing, offsets,
 alignment and default 0.9 scale recovered from `FUN_000a7fa8` / `FUN_000a8544`.
-The common length-based branches are represented; literal-name exceptions
-(such as Howard's Mom, French Teacher and Spud The Stud), persistent changes
-to name-font line gaps and all overflow variants are not complete. Research
-output is preserved in `native-dialogue-placement.c`.
+All branches of these two routines are represented, including literal-name
+exceptions and persistent font state. The shared ink-bounds correction and
+remaining fidelity limits are documented under
+[speaker labels](#speaker-labels-and-persistent-font-state). Earlier research
+output is preserved privately in `native-dialogue-placement.c`.
 
 `FUN_00179a6c` gives each font node an anchor of `(0.5,0.5)`.
 The desktop draws glyph ink relative to the derived origin, including negative
@@ -431,6 +541,17 @@ reuse across other panel types remain incomplete. The modeled ordinary
 transitions are not evidence that every dialogue lifecycle path is equivalent.
 
 ## Implemented text foundation and remaining UI work
+
+Service 8's episode introductions and week cards now use the original PNG
+font pairs 528/529 and 530/531, layout 48, full-screen background, shared footer
+and native entrance/input behavior. [TITLE_SCREENS.md](TITLE_SCREENS.md)
+records glyph placement, subtitle length branches, wipe/fade/scale clocks,
+early-tap handling, save state and remaining promotional/transition limits.
+
+Service 33's standalone Instructions/message panel now uses native layouts
+24/15/25, blue skin, APK bitmap fonts, continuation label and footer. Its
+one-second reading gate, raw-text contract and remaining presentation limits
+are documented in [STORY_SERVICES.md](STORY_SERVICES.md#message-panel-service-33).
 
 `fonts.py` implements the supported descriptor schema, native integer parsing,
 line fitting, source offsets, nominal line metrics, per-line indents, glyph

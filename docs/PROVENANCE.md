@@ -25,6 +25,28 @@ SHA-256:
 b17aa4c71bc46666d414cafae6fac92bbcd755f3dcccd73975cf05f4a119665b
 ```
 
+The Android music-cue rules additionally come from
+`com.eamobile.shs_na_wf.SHS09SoundEngine.playMusic` in the supplied APK's
+`classes.dex`, SHA-256:
+
+```text
+8e5bdc26784153301f473db9103d00b5f950943743252d99a779852fc5be66a9
+```
+
+Only the recovered ID/offset contract and compatible implementation are
+included; Java/Dalvik disassembly stays in private research files.
+
+The speaker-label rules were checked against `FUN_000a7fa8`, `FUN_000a8544`,
+`FUN_0004dc20` and font initialization/lifetime code in the same native binary.
+[UI_FIDELITY.md](UI_FIDELITY.md#speaker-labels-and-persistent-font-state)
+separates those recovered rules from the runtime's additional glyph-bounds
+correction. Non-overlap checks are not evidence of exact original rendering.
+
+Episode/week title screens were recovered from `FUN_000a70b4`, `FUN_000a650c`,
+`FUN_000a65b4`, `FUN_000a6800` and the external glyph-font routines in the same
+binary. [TITLE_SCREENS.md](TITLE_SCREENS.md) records the original resources,
+coordinates, animation/input gates, callback and remaining comparison limits.
+
 Names such as `native-kiwi-vm.c`, `native-exp-loader.c` and
 `new-girl-start-trace.json` identify private evidence snapshots in the original
 research checkout. The raw decompilations and generated traces are deliberately

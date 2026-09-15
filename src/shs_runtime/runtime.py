@@ -13,6 +13,8 @@ from .engine import EngineAction, EngineState
 from .dialogue_animation import DialogueAnimation, DialoguePortrait
 from .dialogue_notice import notice_lifetime
 from .relationships import RelationshipAnimation, RelationshipChange
+from .speaker_names import SpeakerNames
+from .title_screen import TitleScreen
 from .minigames import NativeRandom, RAND48_INITIAL, RAND48_MASK
 from .vm import KiwiVM, StopKind, VMError, VMStop, signed16
 
@@ -109,10 +111,17 @@ class Session:
         action = self.pending
         if not action or action.name != 'dialogue' or not hasattr(self.resources, 'dialogue_layout'):
             return None
-        return self.resources.dialogue_layout().page(action.details, action.details.get('page_start', 0))
+        return self.resources.dialogue_layout().page(action.details, action.details.get('page_start', 0),
+                                                    names=self.engine.speaker_names)
 
-    def _prepare_dialogue(self):
+    def _prepare_dialogue(self, *, new_name=False):
         details = self.pending.details
+        if new_name and hasattr(self.resources, 'dialogue_layout'):
+            displayed = self.resources.dialogue_layout().prepare_name(details, self.engine.speaker_names)
+            if details['presentation_mode'] != 4:
+                # Native display-only spacing corrections modify the panel's
+                # retained string; the script's character metadata stays intact.
+                self.engine.panel.speaker = displayed
         details.setdefault('page_start', 0)
         page = self.dialogue_page()
         details['page_end'] = page.end if page else len(details['text'])
@@ -137,7 +146,7 @@ class Session:
                     self.remaining_ms = action.details['timeout_ms'] or None
                 self.pending = action
                 if action.name == 'dialogue':
-                    self._prepare_dialogue()
+                    self._prepare_dialogue(new_name=True)
                     self.engine.dialogue_animation = DialogueAnimation.start(
                         action.details, self.engine.character_art_variants, self.engine.dialogue_animation)
                 else:
@@ -212,7 +221,21 @@ class Session:
             self.engine.dynamic_strings[0] = self.engine.last_input = value
             self.vm.resume(0x7ff5)  # FUN_000d3f5c
             self.pending = None
-        elif action.name in ('presentation', 'dialogue', 'vm_pause'):
+        elif action.name == 'message_panel':
+            if value is not None:
+                raise ValueError('This screen expects an acknowledgement')
+            if not self.engine.message_panel.ready:
+                return action  # 000abb3c ignores early input; it is not queued.
+            self._complete_panel()
+            self.engine.message_panel = None
+        elif action.name == 'presentation':
+            if value is not None:
+                raise ValueError('This screen expects an acknowledgement')
+            if not self.engine.title_screen.acknowledge():
+                return action
+            self._complete_panel()
+            self.engine.title_screen = None
+        elif action.name in ('dialogue', 'vm_pause'):
             if value is not None:
                 raise ValueError('This screen expects an acknowledgement')
             if action.name == 'dialogue':
@@ -235,6 +258,16 @@ class Session:
         else:
             raise VMError(f'Cannot answer {action.name}; its native contract is not implemented')
         return self.advance()
+
+    def _complete_panel(self):
+        # 000ab8b8 / 0007efe8, shared by service 8 and service 33. A queued
+        # random transition consumes one libc draw, even before its animation
+        # is implemented. 000a6448 returns zero without writing result cells.
+        if self.engine.scene_value == 20:
+            self.engine.random48.next()
+        self.engine.scene_value = 0
+        self.vm.resume(0)
+        self.pending = None
 
     def _game_sound(self, game, before):
         if game.sound_serial != before:
@@ -277,6 +310,12 @@ class Session:
         if self.pending and self.pending.name == 'character_picker':
             self.engine.character_picker.tick(elapsed_ms)
             return self.pending
+        if self.pending and self.pending.name == 'message_panel':
+            self.engine.message_panel.tick(elapsed_ms)
+            return self.pending  # Reading time never acknowledges the panel.
+        if self.pending and self.pending.name == 'presentation':
+            self.engine.title_screen.tick(elapsed_ms)
+            return self.pending
         if self.pending and self.pending.name == 'word_game':
             game = self.engine.word_game
             if game.tick(elapsed_ms):
@@ -314,7 +353,7 @@ class Session:
         return self.advance()
 
     def snapshot(self) -> dict:
-        return dict(format='shs-runtime-save', version=8,
+        return dict(format='shs-runtime-save', version=11,
                     content=self.resources.identity, scene=self.scene,
                     script_sha256=digest(self.vm.program.to_bytes()),
                     vm=self.vm.snapshot(), engine=asdict(self.engine),
@@ -325,9 +364,18 @@ class Session:
     @classmethod
     def from_snapshot(cls, resources: EpisodeResources, state: dict):
         try:
-            if state['format'] != 'shs-runtime-save' or state['version'] not in (1, 2, 3, 4, 5, 6, 7, 8):
+            if state['format'] != 'shs-runtime-save' or state['version'] not in range(1, 12):
                 raise SaveError('Unsupported save format or version')
             legacy = state['version'] == 1
+            if state['version'] < 11:
+                state = deepcopy(state)
+                state['engine']['title_screen'] = None
+            if state['version'] < 10:
+                state = deepcopy(state)
+                state['engine']['speaker_names'] = asdict(SpeakerNames())
+            if state['version'] < 9:
+                state = deepcopy(state)
+                state['engine']['message_panel'] = None
             if state['version'] < 8 and state['engine'].get('football') is not None:
                 state = deepcopy(state)
                 football = state['engine']['football']
@@ -377,6 +425,9 @@ class Session:
             session.vm = KiwiVM.from_snapshot(session.vm.program, state['vm'])
             session.engine = _typed_value(state['engine'], EngineState)
             engine = session.engine
+            engine.speaker_names.validate()
+            if engine.title_screen is not None:
+                engine.title_screen.validate()
             if not 0 <= engine.random48.state <= RAND48_MASK:
                 raise SaveError('Invalid random generator state')
             if not 0 <= engine.random.state <= 0xffffffff:
@@ -393,6 +444,8 @@ class Session:
                 engine.scene_badge.validate()
             if engine.loading is not None:
                 engine.loading.validate()
+            if engine.message_panel is not None:
+                engine.message_panel.validate()
             if (len(engine.football_scores) != 2 or
                     any(v is not None and not -32768 <= v <= 32767 for v in engine.football_scores)):
                 raise SaveError('Invalid football scores')
@@ -431,7 +484,8 @@ class Session:
                 if request.kind != expected_kind:
                     raise SaveError('Pending screen does not match the VM stop')
                 allowed = {'choice': (1, 4), 'character_picker': (78,), 'word_game': (71,), 'word_grid': (96,), 'football': (94,), 'dialogue': (13, 65), 'text_input': (17, 40),
-                           'presentation': (8,), 'loading': (91,), 'finished': (None,), 'vm_pause': (None,)}
+                           'presentation': (8,), 'loading': (91,), 'message_panel': (33,),
+                           'finished': (None,), 'vm_pause': (None,)}
                 if name != 'unhandled_yield' and (name not in allowed or request.yield_id not in allowed[name]):
                     raise SaveError('Pending screen does not match its native service')
                 if name == 'choice':
@@ -440,6 +494,13 @@ class Session:
                     if (engine.loading is None or len(request.args) != 1 or details
                             or engine.loading.blocking != bool(request.args[0])):
                         raise SaveError('Loading screen does not match its VM arguments')
+                elif name == 'message_panel':
+                    panel = engine.message_panel
+                    if (panel is None or len(request.args) < 3 or details
+                            or panel.argument != request.args[2]
+                            or panel.title != engine.read_text(session.vm, request.args[0])
+                            or panel.text != engine.read_text(session.vm, request.args[1])):
+                        raise SaveError('Message panel does not match its VM arguments')
                 elif name == 'character_picker':
                     _typed_value(details['text'], str)
                     if engine.character_picker is None or len(request.args) != 3:
@@ -490,15 +551,30 @@ class Session:
                 elif name == 'presentation':
                     for key in ('title', 'subtitle'):
                         _typed_value(details[key], str)
-                    _typed_value(details['asset_id'], int)
+                    for key in ('asset_id', 'flag'):
+                        _typed_value(details[key], int)
+                    if len(request.args) != 4 or details != engine.title_details(session.vm, request.args):
+                        raise SaveError('Title screen does not match its VM arguments')
+                    if state['version'] < 11:
+                        engine.title_screen = TitleScreen.settled()
                 elif name == 'text_input':
                     for key in ('title', 'prompt', 'default'):
                         _typed_value(details[key], str)
                 session.pending = EngineAction(name, request, False, deepcopy(details))
                 if name == 'dialogue':
                     saved_end = details.get('page_end')
-                    session._prepare_dialogue()
-                    if not legacy and session.pending.details['page_end'] != saved_end:
+                    if state['version'] >= 10 and hasattr(resources, 'dialogue_layout'):
+                        names = engine.speaker_names
+                        if names.basis is None:
+                            raise SaveError('Dialogue is missing its speaker layout state')
+                        check = SpeakerNames(deepcopy(names.basis))
+                        resources.dialogue_layout().prepare_name(session.pending.details, check)
+                        if check.fonts != names.fonts:
+                            raise SaveError('Speaker layout does not match its saved font state')
+                    session._prepare_dialogue(new_name=state['version'] < 10)
+                    # Earlier saves did not record native font history. Keep
+                    # the read offset and reflow the remaining page once.
+                    if state['version'] >= 10 and session.pending.details['page_end'] != saved_end:
                         raise SaveError('Saved dialogue page does not match its layout')
                     if state['version'] < 4:
                         engine.dialogue_animation = DialogueAnimation.start(
@@ -529,6 +605,10 @@ class Session:
                 raise SaveError('Character selection does not match its pending screen')
             if (engine.loading is not None) != bool(session.pending and session.pending.name == 'loading'):
                 raise SaveError('Loading state does not match its pending screen')
+            if (engine.message_panel is not None) != bool(session.pending and session.pending.name == 'message_panel'):
+                raise SaveError('Message panel does not match its pending screen')
+            if (engine.title_screen is not None) != bool(session.pending and session.pending.name == 'presentation'):
+                raise SaveError('Title screen does not match its pending screen')
             session.remaining_ms = state['remaining_ms']
             if session.remaining_ms is not None:
                 if (session.pending is None or session.pending.name != 'choice'
@@ -552,9 +632,9 @@ class Session:
                 session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
                 engine.dialogue_animation = None
             if (session.pending and session.pending.name == 'unhandled_yield'
-                    and session.pending.request.yield_id == 39):
-                # Complete the newly supported call from its validated frame,
-                # then follow the saved script queue without replaying input.
+                    and session.pending.request.yield_id in (33, 39)):
+                # Dispatch only the newly supported call from its validated
+                # frame, without replaying previous input or random draws.
                 session.pending = None
                 session.advance()
             return session

@@ -1,6 +1,6 @@
 # Compatible runtime and user content
 
-Revision: 2026-09-13. This is an experimental implementation of the SHS engine.
+Revision: 2026-09-15. This is an experimental implementation of the SHS engine.
 It executes original KiWi instructions and reuses original assets. It currently
 plays the opening of **The New Girl**, including real branching choices and its
 first mini game, and implements timed words, word/picture grids and football; it
@@ -20,7 +20,9 @@ portrait, the original fonts, divided rows and the gear/footer. Remaining
 placement/timing differences are listed in [UI_FIDELITY.md](UI_FIDELITY.md#ordinary-choice-panels).
 Mini games reuse the original APK art with recovered input/scoring contracts;
 their remaining presentation differences are in [MINIGAMES.md](MINIGAMES.md).
-Other screens retain prototype layouts.
+Episode introductions and week cards now use their original background,
+external glyph fonts, placement, entrance and acknowledgement gate; see
+[TITLE_SCREENS.md](TITLE_SCREENS.md). Text entry retains a prototype layout.
 
 The user reports that the iOS and Android interfaces were identical. The
 available **Android 1.0.9 executable and APK assets** are therefore the working
@@ -136,13 +138,13 @@ saves are not supported.
 | Input | Action |
 | --- | --- |
 | Checkmark, tap dialogue, Enter, or Space | Finish an unfinished text reveal; once complete, show the next page or acknowledge the VM after the last page |
-| Continue button / Enter / Space on a title screen | Acknowledge that presentation |
+| Tap a title screen / Enter / Space | Complete an unfinished title wipe; once its input gate opens, acknowledge the presentation |
 | Click an option or press 1–9 | Submit that choice to the VM |
 | Click a word or press 1–4 in timed words | Score the selected word and deal new options |
 | Hold and drag across grid cells | Trace a word or picture sequence, including diagonal steps; no repeated cell |
 | Click a football target or press 1–9 | Commit that play; targets change over time |
 | Tap football help / Enter / Space | Continue after its native reading delay |
-| Gear on dialogue, choice or mini-game screens | Open Resume/Save/Load/Main Menu; active game time pauses |
+| Gear on title, dialogue, choice or mini-game screens | Open Resume/Save/Load/Main Menu; active game time and music pause |
 | Type, Backspace, Enter | Edit and submit a text input |
 | Save button / F5 | Replace the current episode's local save slot |
 | Load button / F9 | Restore that slot |
@@ -224,9 +226,11 @@ fallback and EXPD variants remain unsupported.
 | `atlas.py` | ABGR sprite atlases, signed composites and binary glyph-font records |
 | `minigames.py`, `word_grid.py`, `football.py` | Game rules, random streams, input phases, scoring and clocks |
 | `dialogue.py` | Native dialogue geometry, name placement and page layout |
+| `title_screen.py`, `desktop_title.py` | Episode/week title fonts, layout, entrance animation and input gate |
 | `desktop_text.py` | Original atlas drawing for dialogue; font/layout/glyph caches |
 | `desktop_dialogue.py` | Original dialogue artwork and portrait composition |
 | `desktop.py` | pygame input, presentation, images, and basic audio |
+| `audio.py` | Android music-cue redirects and millisecond start offsets; separate from exact resource lookup |
 | `menu.py`, `desktop_menu.py` | Native menu geometry, string/glyph resources, menu UI, local preferences/checkpoints |
 | `application.py` | Setup/import, menu navigation, session lifecycle, worker/event loop and exit |
 
@@ -243,6 +247,11 @@ numeric filenames. Font/image/animation atlas filenames in other subdirectories
 are separate namespaces, so `images/1.png` never replaces global resource 1.
 An absent episode resource does not silently fall back to an unrelated APK ID.
 Named UI resources are read explicitly with `ContentLibrary.read_ui_asset()`.
+Music playback separately applies eleven verified Java sound-engine redirects:
+for example, cue 8202 plays APK track 8201 starting at 2800 ms. The requested
+ID remains in engine/save state, and generic resource reads stay exact. These
+cues use the APK already in the library; no additional download or import is
+needed. See [Android music cues](ENGINE_ABI.md#android-music-cues).
 Font atlases are read directly from the imported APK, including `.dat` files
 that contain PNG data. Neither original font tables nor images ship with the
 runtime; no system-font installation is needed for the recovered dialogue path.
@@ -253,19 +262,19 @@ IDs take priority, including its scripts in the 25000 range. Playback starts at
 last scheduled script. Registers and complete stack backing survive that load,
 while data and PC/SP/FP reset according to the core VM contract.
 
-## Runtime save schema, version 8
+## Runtime save schema, version 11
 
 This is a new format for the reimplementation. No pickle, object deserialization,
 or original executable code is used. JSON fields are:
 
 | Field | Contract |
 | --- | --- |
-| `format`, `version` | `"shs-runtime-save"`, `8` |
+| `format`, `version` | `"shs-runtime-save"`, `11` |
 | `content` | `profile`, `apk_sha256`, `episode_sha256`; must exactly match loaded content |
 | `scene` | Unsigned current script resource ID |
 | `script_sha256` | Hash of the losslessly encoded current program |
 | `vm` | Full mutable machine state, defined below |
-| `engine` | All current `EngineState` dataclass fields, including panel, dialogue animation, choice builder, random streams and any active mini game |
+| `engine` | All current `EngineState` dataclass fields, including panel, speaker font history, dialogue/title animation, choice builder, random streams and any active mini game |
 | `pending` | Null, or `{name, details}` for the suspended screen/service |
 | `remaining_ms` | Null for no timer; otherwise the remaining active choice time in milliseconds |
 | `scene_loads` | Nonnegative number of scheduled script loads |
@@ -298,7 +307,9 @@ A pending dialogue includes the requested `character_id`, `visible_character_id`
 visible `speaker`, `expression`, raw/displayed text, those mode/palette fields,
 and `page_start` / `page_end`, as Latin-1 source-byte offsets. The VM stays
 suspended while these offsets advance. Page layout is derived from the same
-user-supplied APK; saved page extents are checked on load.
+user-supplied APK; current-version saved page extents are checked on load.
+The pending `speaker` precedes the native display-spacing rewrites; the panel's
+retained `speaker` includes them. Neither changes the character's stored name.
 
 Version-1 saves are migrated without executing the pending VM instruction or
 replaying choices. Pending dialogue is reconstructed from its raw text and
@@ -363,6 +374,52 @@ Older football saves preserve recorded text, timers, scores, VM and random
 state; missing camera history starts at the saved field position and outgoing
 effects start empty. See [FOOTBALL_UI.md](FOOTBALL_UI.md#saved-presentation-and-verification).
 
+Version 9 adds `message_panel`, holding service 33's raw title/body, retained
+third argument and active reading time. Older saves gain a null field; saves
+paused at unsupported service 33 enter its recovered Instructions/message
+screen without replaying earlier inputs. Panel text and arguments are checked
+against the pending VM call, and restored clocks do not restart. See
+[STORY_SERVICES.md](STORY_SERVICES.md#saves-and-verification-version-9).
+
+Version 10 adds `engine.speaker_names`. Native name labels retain layout inputs
+between dialogues, so treating this state as a disposable renderer cache could
+change the next name's placement or large-name branch after restoring a save.
+
+| Field | Type / contract |
+| --- | --- |
+| `fonts` | Map from font name to the state after the current name layout |
+| `basis` | Null before layout, otherwise the font-state map immediately before the current dialogue |
+| Map keys | Only `PajamaHip26`, `PajamaHipY26`, `PajamaHip266`, `PajamaHipG26`; absent keys use initial state |
+| Per-font `width`, `height` | Integer content dimensions, 0–65535; initially 0 |
+| Per-font `gap` | Integer -16 initially, or 8 after the native large-name branch |
+| Per-font `lines` | Integer previous line count, 0–65535; initially 1 |
+| Per-font `indents` | Integer list `[]`, `[0,5]` or `[0,20]`; initially empty |
+
+Layout advances `fonts` once when presenting a dialogue. Redraws and page
+turns work from a copy of `basis`; they never advance that history. A version-10
+pending dialogue with asset layout requires a non-null basis. Loading replays
+only the pure name layout on that copy and checks its resulting bank against
+`fonts`, along with the page extent. This does not execute any VM instructions.
+Both banks survive panel close; they are fresh for a new episode session.
+
+Versions 1–9 have no saved name-font history. Migration initializes it and
+applies the current name once. Versions 2–9 retain their saved `page_start`
+and reflow the remaining page; version 1 still starts at zero as described
+above. Saved VM frames, previous choices, random streams and reveal clocks
+are not replayed or restarted. No APK/episode reimport is needed. The generic
+ink-bounds correction is derived drawing data, never serialized back into the
+native font state. See the recovered rules and explicit compatibility limit in
+[UI_FIDELITY.md](UI_FIDELITY.md#speaker-labels-and-persistent-font-state).
+
+Version 11 adds `engine.title_screen`, holding service 8's active `elapsed_ms`
+(0–4000), horizontal `reveal_width` (0–320) and boolean `ready` input gate.
+It is non-null exactly while a title presentation is pending. Width, gate,
+resolved strings and asset/flag fields are validated against the clock and
+retained VM frame. Older title saves migrate to a fully revealed, settled
+screen without replaying the VM or consuming randomness. Current saves retain
+the exact entrance phase. See [TITLE_SCREENS.md](TITLE_SCREENS.md#save-schema-version-11)
+for the field constraints, early-tap state and shared completion side effects.
+
 A save retained at unsupported service 39 now completes the recovered panel
 close through its validated VM frame and follows the saved script queue to
 the next stop. This also applies to version-6 saves; no schema fields change.
@@ -376,9 +433,13 @@ prior script input or reapply choice side effects. Saving uses a temporary file
 and atomic replacement, with one slot per episode by default.
 
 Timers count active foreground time. Saving preserves the remaining interval;
-time spent with the application closed or unfocused does not consume it. Audio
-position is not serialized; loading restarts the requested music track.
-Implemented dialogue/mini-game animation clocks and both modeled random streams
+time spent with the application closed or unfocused does not consume it. Music
+pauses while the pause menu is open, the window is unfocused, or the live
+episode is in the main menu. Resuming that live episode keeps the stream's
+position; both focus and menu holds must clear before it resumes. Audio
+position is not serialized; loading a save restarts the requested music cue
+at its native start offset.
+Implemented dialogue/title/mini-game animation clocks and both modeled random streams
 are serialized. Other native animation and panel-lifecycle state remains partial;
 newly modeled fields will require explicit save migrations.
 
@@ -449,11 +510,14 @@ saves, grouped resources, remaining texture/composite animation formats, and
 iOS/Android differences. Dialogue uses the original fonts, layout bank, box
 artwork, masked portrait placement and paging. Narration hides the configured
 character's name and portrait; thought prefixes add parentheses. Ordinary
-choices use the supplied screenshot layout and APK artwork; title/text-input
-screens retain prototype fonts/layouts. Dialogue portraits scale in/out and
-names fade while text reveals; backgrounds remain static, with basic music/SFX
+choices use the supplied screenshot layout and APK artwork. Episode/week title
+screens now use their original glyph fonts, layout and entrance animations;
+text-input screens retain prototype fonts/layouts. Dialogue portraits scale in/out and
+names fade while text reveals; dialogue backgrounds remain static, with basic music/SFX
 playback. NPC relationship icons now use original assets, cache writes, sounds,
-gains/losses and dialogue delays. Cross-object kerning, name-fitting exceptions,
+gains/losses and dialogue delays. Name layout includes the native exceptions
+and persistent font inputs, with a documented glyph-bounds correction for
+remaining overlaps. Cross-object kerning, other widgets' shared font effects,
 scene transitions and native global input locks remain incomplete; see
 [UI_FIDELITY.md](UI_FIDELITY.md). Native panel lifecycle and Android promotional
 branches, music repeat/fades, and all channel behavior are not fully reproduced.

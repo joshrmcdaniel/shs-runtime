@@ -4,7 +4,7 @@ No glyph metrics or images are embedded here. They come from the player's APK.
 This module does not depend on a window system. See docs/UI_FIDELITY.md for
 native addresses, scope, and the distinction between pen advances and kerning.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import re
 import shlex
@@ -235,3 +235,39 @@ def layout_text(font: BitmapFont, text: str, width: float, style: TextStyle,
     return TextLayout(tuple(lines), tuple(placements),
                       max((line.width for line in lines), default=0), height,
                       previous_glyph, color, alternate, highlighted)
+
+
+def layout_label(font: BitmapFont, text: str, width: float, height: float,
+                 style: TextStyle, flags: int) -> TextLayout:
+    """FUN_0004dc20: wrapped/aligned text in a native node's content rectangle.
+
+    Coordinates start at the node's bottom-left corner and increase downward,
+    as in layout_text. Apply the node's anchor/scale/position separately.
+    Bits 0..1 select left/center/right, bits 2..3 top/center/bottom, bit 4
+    enables wrapping, and bit 5 limits the number of drawn lines to the height.
+    """
+    if not all(math.isfinite(v) and v >= 0 for v in (width, height)):
+        raise FontError('Invalid label dimensions')
+    wrapping = bool(flags & 0x10)
+    if wrapping and width == 0:
+        # Native aborts when the zero-sized initial label cannot fit a glyph.
+        return layout_text(font, '', 1, style)
+    text_width = width if wrapping else layout_text(font, text, 2**31, style).width + .1
+    measured = layout_text(font, text, text_width, style)
+    horizontal = {2: .5, 3: 1}.get(flags & 3, 0)
+    block_x = (width - text_width) * horizontal
+    vertical = flags & 0xc
+    block_y = ((height - measured.height) / 2 if vertical == 8 else
+               height - measured.height - 4 if vertical == 12 else 0)
+    limit = (height if flags & 0x20 else 4096) + (4 if vertical == 12 else 0)
+    step = style.height + style.gap
+    capacity = (max(1, int((limit - style.height) // step) + 1) if step else
+                1 if style.height > limit else len(measured.lines))
+    lines, glyphs = [], []
+    for index, line in enumerate(measured.lines[:capacity]):
+        indent = int(style.indents[index]) if index < len(style.indents) else 0
+        shift_x = block_x + (text_width - abs(indent) - line.width) * horizontal
+        lines.append(replace(line, x=line.x + shift_x, y=line.y - block_y))
+        glyphs.extend(replace(g, x=g.x + shift_x, y=g.y - block_y)
+                      for g in measured.glyphs if line.start <= g.index < line.end)
+    return replace(measured, lines=tuple(lines), glyphs=tuple(glyphs))

@@ -32,7 +32,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 5 (`05`) | a1, low byte of a2 | Writes a byte at game-state offset a1 via `FUN_00095d48`; service 13 reads these bytes as character expression defaults. | 0 | C (expression byte) |
 | 6 (`06`) | a1, a2 destination | Gets the named character string via `FUN_00096c64`; writes to VM address a2 or, for negative a2, dynamic slot `~a2`. | address / handle | X |
 | 7 (`07`) | none read here | Calls scene helper `FUN_0007e614`, same as 63; full effect unresolved. | 0 | X |
-| 8 (`08`) | T(1), T(2), a3, a4 | Title/subtitle presentation through UI type 16; a3 is an asset ID, a4 a flag. Native special-title behavior is not modeled. | pending | P |
+| 8 (`08`) | a1 title ref, T(2), a3, a4 | Episode/week title card, UI type 16; negative a1 means empty title, a3 is the background asset, a4 a retained flag. Original fonts, layout, entrance and input gate; Android promotional branches remain unmodeled. See [TITLE_SCREENS.md](TITLE_SCREENS.md). | 0 on acknowledgement | P |
 | 9 (`09`) | helper-defined | Builds `pollID=...&upType=...` request via `FUN_0009f0cc`, invokes UI/network path, and waits. Old background label is incorrect. | pending | X |
 | 10 (`0a`) | a1, bool(a2) | Schedules script resource a1 and its flag through `FUN_0007b44c`; LIFO consumption after HALT. | 0 | C |
 | 11 (`0b`) | a1, a2 | Sets panel background base a2, variant a1 through `FUN_000a92f4`. | 0 | C (static background) |
@@ -40,7 +40,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 13 (`0d`) | optional negative mode, text, character, optional override | Dialogue path; raw text reference is subsequently substituted by the panel. Section 4 describes argument positions. | pending | P |
 | 14 (`0e`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 15 (`0f`) | optional negative prefix, then T(text1), T(text2) | Sets panel mode 3, two substituted text fields, starts display, waits; shares tail with 76. | pending | X |
-| 16 (`10`) | a1 | Writes signed a1 to scene state `+0x1c1c`; purpose unresolved. | 0 | C (stored value) |
+| 16 (`10`) | a1 | Queues a screen-transition selector at scene `+0x1c1c`. Services 8/33 consume it on acknowledgement; selector 20 draws a libc random bit for transition 1/2. Other panel paths remain partial. | 0 | C (queue; callbacks partial) |
 | 17 (`11`) | T(1), T(2), T(3) | Text input: title, prompt, initial value; UI factory type 15, same as 40. | string handle 0x7ff5 | P |
 | 18 (`12`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | C (zero args) |
 | 19 (`13`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
@@ -57,7 +57,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 30 (`1e`) | a1 | Calls application virtual slot `+0x1e8`; effect unresolved. | 0 | X |
 | 31 (`1f`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 32 (`20`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
-| 33 (`21`) | t(1), t(2), a3 | Creates/attaches UI through `FUN_000ac73c` and waits. | pending | X |
+| 33 (`21`) | t(1) title, t(2) body, a3 retained | Raw-text message panel, UI type 2. Requires 1000 ms active reading time, then acknowledgement; a3 does not set the initial delay. See [STORY_SERVICES.md](STORY_SERVICES.md#message-panel-service-33). | 0 on acknowledgement | P |
 | 34 (`22`) | a1, a2 | If panel type 3 is absent, creates it and sets background `(a2,a1)`; otherwise default completion. | 0 | C (static background; lifecycle partial) |
 | 35 (`23`) | a1..a4 | If panel 3 exists, character/expression update `(a1,a4)` via `FUN_000ab048`, then background `(a3,a2)`. | 0 | C (static panel; side effects partial) |
 | 36 (`24`) | t(1) | Sets a panel text field through `FUN_000aa028`. | 0 | X |
@@ -180,7 +180,65 @@ Service 10 `(script_id, flag)` appends a schedule record; records are consumed i
 
 Services 74 and 75 each accept one word and store separate numeric UI defaults. Native consumers can use -2 as a sentinel selecting a stored default; for example the panel setup in service 1 reads `DAT_002af012`. These services are not fade-in/fade-out actions.
 
-Service 79 selects a music request for IDs 8201–8232 and otherwise a sound-effect request. Service 80 stores a music ID and a flag; the flag is retained without assigning a speculative repeat/fade meaning. Service 81 accepts one word and calls the native audio-stop path. The desktop plays the requested music once, plays the latest requested SFX, and stops music when requested. Native fades, looping, all channel semantics, and intermediate same-frame requests remain open.
+Service 79 selects a music request for IDs 8201–8232 and otherwise a sound-effect request. Service 80 stores a music ID and a flag; the flag is retained without assigning a speculative repeat/fade meaning. Service 81 accepts one word and calls the native audio-stop path. The desktop resolves the music cues below, plays the requested music once, plays the latest requested SFX, and stops music when requested. Native fades, looping, all channel semantics, and intermediate same-frame requests remain open.
+
+#### Android music cues
+
+Native `FUN_000a3778` constructs `Assets/audio/music/<id>.mp3` for IDs
+8201–8232. JNI bridge `FUN_000dc938` then calls
+`com.eamobile.shs_na_wf.SHS09SoundEngine.playMusic(String)` in `classes.dex`.
+That Java method redirects **eleven** filenames and seeks to a millisecond
+offset before starting playback. These IDs are alternate cues within existing
+tracks, not missing standalone audio or approximate nearest-ID fallbacks.
+
+| Requested music ID | APK MP3 ID | Start offset, milliseconds |
+| --- | --- | --- |
+| 8202 | 8201 | 2800 |
+| 8204 | 8203 | 720 |
+| 8206 | 8205 | 28280 |
+| 8208 | 8207 | 3270 |
+| 8211 | 8210 | 6000 |
+| 8213 | 8212 | 4000 |
+| 8214 | 8212 | 39200 |
+| 8216 | 8215 | 1320 |
+| 8218 | 8217 | 1920 |
+| 8220 | 8219 | 10600 |
+| 8225 | 8224 | 29200 |
+
+The Java path stops/releases the previous player, applies the first matching
+filename rule, prepares a new player, calls `seekTo(offset)` for nonzero
+offsets, sets music volume, then starts it. It does not set looping in this
+method. All other filenames start at zero. ID 8222 has neither a file nor a
+redirect in the inspected APK; its missing-resource diagnostic remains valid.
+No replacement is inferred for it.
+
+`audio.music_cue()` reproduces this mapping at playback only. Engine state,
+saved `music_id`, and exact content lookup keep the original requested ID;
+the renderer reads the mapped source and passes seconds to SDL_mixer's
+`music.play(start=...)`. Different cues sharing a source still restart at
+their distinct offsets. SFX and episode resource IDs are not remapped.
+Existing libraries/saves work without reimport or migration because the
+complete source APK was retained. Saving the in-progress playback position
+and matching Android's codec seek precision remain outside the current
+audio save contract.
+
+Desktop pause/focus handling retains the loaded mixer stream separately from
+the VM's requested cue. The pause menu and window inactivity each hold music;
+both must clear before playback resumes. Returning through the main menu to
+the same live session also preserves the playhead. Muting, service 81's stop,
+and a changed cue replace that playback state; resuming cannot revive a muted
+or replaced track. New sessions and explicit save loads still start their
+requested cue. These are desktop lifecycle rules, not recovered native loop
+or fade semantics. No audio transport fields are added to the save schema.
+
+Evidence: `SHS09SoundEngine.java` debug lines 145–253, inspected as Dalvik
+instructions in the player-supplied APK. The DEX hash is recorded in
+[PROVENANCE.md](PROVENANCE.md). Authored tests check both music services,
+source bytes and seek offsets, request preservation, switching between cues,
+mute/re-enable, unmapped missing resources, pause/focus combinations and live
+menu resume. An authored WAV checks that the real mixer holds its position
+while paused and continues without reloading. Optional player-content tests
+decode and start all eleven cues with the desktop mixer.
 
 `FUN_000a92f4(panel, base, variant)` leaves the background unchanged for base -2, hides it for -1, and otherwise uses base+variant for variants 1/2 when that asset exists, falling back to base. Services 11/34 pass `(a2,a1)`, 35 passes `(a3,a2)`, and 86 passes `(a1,a2)`. The frontend retains the static background; native panel existence checks, transitions, and flag-dependent side effects are only partially modeled.
 
@@ -188,7 +246,22 @@ Service 79 selects a music request for IDs 8201–8232 and otherwise a sound-eff
 
 ### 4.1 Service 8: title presentation
 
-The positive-title form is `(title_ref, subtitle_ref, asset_id, flag)`. UI factory `FUN_0009fa3c` type `0x10` calls `FUN_000a7758` with substituted title/subtitle and the two numeric fields, attaches the panel, and waits. Negative title references and particular hard-coded title text also trigger Android-specific branches; the Python presentation event does not reproduce those effects.
+The frame is `(title_ref, subtitle_ref, asset_id, flag)`. UI factory
+`FUN_0009fa3c` type `0x10` calls `FUN_000a7758` with substituted title/subtitle
+and the two numeric fields, attaches the panel, and waits. Every negative
+title reference produces an empty title without reading VM memory.
+
+Episode introductions and Football Star's week cards use this same screen.
+`FUN_000a70b4` loads PNG/glyph-font pairs 528/529 and 530/531, uses layout 48,
+and animates the background, title wipe and subtitle. An early tap finishes
+the wipe; a later accepted tap returns zero without writing a result cell.
+The shared transition completion can consume one `lrand48` draw when service
+16 has queued selector 20. The model, input gates, callback and version-11
+save schema are in [TITLE_SCREENS.md](TITLE_SCREENS.md).
+
+Negative title references and the first-week title also trigger Android
+promotional branches. Those overlays, shared menu-background variant effects
+and transition visuals are not reproduced by the local title screen.
 
 For the bundled `The_New_Girl.exp`, the verified first presentation in scene 25002 is:
 
@@ -231,8 +304,15 @@ Character-owned key 651 selects the ordinary theme. Backticks and semicolons are
 color controls, with a shared toggle. Kerning affects glyph drawing but not
 wrap measurements. The desktop uses native layout-17 rectangles, original box
 skins, masked portraits and session-owned pagination. Persistent font-object
-state, name exceptions, secondary expressions, decorations and global
-transition locks remain partial. Ordinary dialogue now has a source-index
+sizes, gaps, line counts and indents, plus the native name exceptions, are
+implemented for the dialogue path and saved in version 10. Drawing applies
+a general glyph-bounds correction to prevent remaining name/body/portrait
+overlaps; this correction is not a verified native rule. Cross-object kerning,
+other widgets' shared font effects, secondary expressions, decorations and
+global transition locks remain partial. The recovered name branches and
+compatibility boundary are specified in
+[UI_FIDELITY.md](UI_FIDELITY.md#speaker-labels-and-persistent-font-state).
+Ordinary dialogue now has a source-index
 reveal, 300 ms portrait scales/name fades, and a 350 ms page-turn reveal delay.
 The scheduler policy and remaining timing paths are specified in
 [UI_FIDELITY.md](UI_FIDELITY.md#dialogue-transitions-and-reveal-scheduler).

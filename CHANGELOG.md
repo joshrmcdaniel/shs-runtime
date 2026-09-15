@@ -7,6 +7,26 @@ are listed under Unreleased.
 
 ### Fixed
 
+- Restored the shared episode-intro and week-card screen, including Football
+  Star's week titles: original fonts, background scaling, text placement,
+  title wipe, background fade, subtitle animation and tap behavior. Save
+  version 11 preserves intro animation state and migrates existing saves.
+- Music now pauses with gameplay and resumes from the same position after
+  closing the pause menu, regaining window focus, or returning to a live
+  episode from the main menu.
+- Restored native speaker-name widths, alignment and persistent spacing,
+  including Howard's parents and quiz teachers. A shared glyph-bounds
+  correction keeps names clear of dialogue and portraits across page turns.
+  Save version 10 retains font history and migrates existing saves.
+- Fixed top-left location/time labels so their text aligns inside the badge,
+  including wrapped labels. No content reimport is needed.
+- Restored eleven Android music cues that reuse another APK track at a
+  specific start offset. This fixes missing-music warnings for 8202, 8208,
+  8211, 8220, 8225 and the other verified redirects, using existing libraries.
+- Implemented service 33's Instructions/message panel, fixing Football Star
+  scene 25011, PC 629. Restored its original panel assets, reading delay and
+  acknowledgement callback, including the shared random-stream side effect.
+  Save version 9 preserves reading time and recovers older saves paused there.
 - Relationship indicators now read the correct NPC property, so script changes
   update the icons and count, including Adam's four skulls in Football Star.
 - Implemented service 39's dialogue panel cleanup, fixing the Football Star

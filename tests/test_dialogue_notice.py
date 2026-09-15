@@ -71,7 +71,7 @@ class NoticeTests(unittest.TestCase):
         s = notice_session()
         # An authored four-character page separates reveal, page, and VM gates.
         s.resources.dialogue_layout = lambda: SimpleNamespace(
-            page=lambda details, start: SimpleNamespace(end=min(start + 4, len(details['text']))))
+            page=lambda details, start, **kwargs: SimpleNamespace(end=min(start + 4, len(details['text']))))
         s._prepare_dialogue()
         held = s.vm.snapshot()
         s.answer()

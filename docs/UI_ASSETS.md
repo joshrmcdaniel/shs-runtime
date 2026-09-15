@@ -239,6 +239,13 @@ The main menu additionally uses the resource-13 offset string bank and
 resource-532/533 fonts with embedded ARGB glyphs. Their schemas and native
 consumers are documented in [MAIN_MENU.md](MAIN_MENU.md#3-additional-resource-schemas).
 
+Episode/week titles use PNGs 528/530 with external glyph descriptors 529/531.
+These use the six-byte font header and byte glyph records described in the
+mini-game schema, with the PNG dimensions supplying atlas bounds.
+[TITLE_SCREENS.md](TITLE_SCREENS.md) records their metrics, consumers and
+title-specific positioning; they are not ABGR sprite packs or the dialogue's
+named bitmap-font format.
+
 Mini games also use a different payload path: big-endian atlas metadata followed
 by square **ABGR** pixels. Football atlas 290 includes signed nested composites;
 grid atlas 446 includes tile/arrow art, while 522/523 pair a glyph atlas with

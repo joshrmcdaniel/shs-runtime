@@ -21,7 +21,7 @@ class SceneBadge:
         # Native label node centers in a 171x60 sprite (GL local coordinates).
         n = len(self.text)
         if 15 <= n <= 17:
-            return 123, 46, 1.0
+            return 123, 55, 1.0
         if n < 13:
             x = {'Before Class': 120, 'Mascot Theft': 122, 'Driving Home': 120}.get(self.text, 125)
             return x, 45, 1.0
@@ -32,3 +32,11 @@ class SceneBadge:
                     'Saturday Night': (119, 45)}.get(self.text, (117, 53))
             return x, y, .9 if self.text == 'Before School' else 1.0
         return 121, 55, 1.0
+
+    @property
+    def text_origin(self):
+        # FUN_0007b97c: a 110x20 label with (.5,.5) anchor and flags 0x11
+        # (wrapped, left/top aligned). Text draws downward from local zero;
+        # converting the anchor to screen Y therefore adds half its height.
+        x, y, scale = self.text_position
+        return x - 55 * scale, 60 - y + 10 * scale, scale

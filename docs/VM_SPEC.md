@@ -378,6 +378,12 @@ UI services may set `+0x84=1` and return with the argument frame intact. The C d
 
 Asynchronous helper `FUN_0009e888` removes the saved argument count, sets R to the callback result, sets status 2, and clears wait flags. String-result callbacks can populate dynamic slot 0 and return `0x7ff5`. Exact choice indices, cancellations, minigame results, and callback-specific side effects belong to the individual service contract and remain partially unresolved.
 
+Service 33 is a recovered zero-result callback: its raw-text message panel
+requires 1000 ms of active reading time and subsequent acknowledgement,
+preserves the argument frame while waiting, and leaves choice-result cells
+unchanged. Its queued transition can consume the shared libc random stream.
+See [message-panel contract](STORY_SERVICES.md#message-panel-service-33).
+
 The Python API represents this boundary as `VMStop(kind='yield', yield_id, args, pc, byte_offset)`. Its stop PC is the issuing instruction; `vm.pc` has already advanced. Calling `run()` again returns the pending request. `resume(result)` explicitly completes it. The Python VM sets R=-1 when creating the request, combining the core-yield and dispatcher-entry stages above.
 
 An unknown host service must remain pending or report unsupported in a faithful new implementation. Guessing zero can select the wrong branches. The inspected Android dispatcher has explicit default cases, but an iOS game may depend on a service absent from that Android build.
@@ -418,7 +424,7 @@ Text substitution is also a host operation. `FUN_0009f9fc` resolves text and app
 
 Service 10 records `(script_resource_id, flag)` through `FUN_0007b44c`. The engine's scene runner `FUN_0007f5f4` consumes scheduled scripts in **LIFO order after HALT**. Scheduling does not immediately jump within bytecode, and `0x33` alone does not identify a next scene. The flag affects native panel handling; rendering that effect is not implemented.
 
-Game variables, character names/art, replacement strings, audio/UI state, and the schedule live outside the core data array. They survive ordinary scene changes in the current host model. A faithful port needs both VM and host state when saving a pending choice. The reimplementation now saves that modeled state in a versioned JSON format, including complete stack backing and a pending input frame; see [runtime save schema](RUNTIME.md#runtime-save-schema-version-8). Neither that format nor `load_next()` specifies the original native save-file format. Native serialization, missing host state, and full renderer/rollback behavior remain open.
+Game variables, character names/art, replacement strings, audio/UI state, and the schedule live outside the core data array. They survive ordinary scene changes in the current host model. A faithful port needs both VM and host state when saving a pending choice. The reimplementation now saves that modeled state in a versioned JSON format, including complete stack backing and a pending input frame; see [runtime save schema](RUNTIME.md#runtime-save-schema-version-11). Neither that format nor `load_next()` specifies the original native save-file format. Native serialization, missing host state, and full renderer/rollback behavior remain open.
 
 ## 10. Conformance examples and validation
 

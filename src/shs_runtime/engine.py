@@ -13,6 +13,9 @@ from .football import Football, read_football
 from .character_picker import CharacterPicker
 from .scene_badge import SceneBadge
 from .loading import LoadingScreen
+from .message_panel import MessagePanel
+from .speaker_names import SpeakerNames
+from .title_screen import TitleScreen
 from .relationships import RelationshipChange
 from .dialogue_animation import DialogueAnimation
 from .dialogue_notice import notice_lifetime
@@ -77,6 +80,9 @@ class EngineState:
     scene_badge: SceneBadge | None = None
     next_dialogue_wobble: bool = False
     loading: LoadingScreen | None = None
+    message_panel: MessagePanel | None = None
+    speaker_names: SpeakerNames = field(default_factory=SpeakerNames)
+    title_screen: TitleScreen | None = None
 
     @staticmethod
     def number_key(owner: int, key: int) -> int:
@@ -179,6 +185,12 @@ class EngineState:
     def resolve_text(self, vm: KiwiVM, reference: int) -> str:
         """FUN_0009f9fc/00096c9c applies stored text substitutions repeatedly."""
         return self.substitute(self.read_text(vm, reference))
+
+    def title_details(self, vm: KiwiVM, args):
+        # 0009fa3c does not dereference a negative title. Its Android
+        # promotional branch is separate from the title card itself.
+        return dict(title='' if args[0] < 0 else self.resolve_text(vm, args[0]),
+                    subtitle=self.resolve_text(vm, args[1]), asset_id=args[2], flag=args[3])
 
     @staticmethod
     def write_text(vm: KiwiVM, address: int, text: str):
@@ -402,11 +414,15 @@ class EngineState:
             return complete('set_scene_badge', asset_id=args[0], text=text)
         if y == 8:
             need(4)
-            return EngineAction('presentation', request, False, dict(
-                title=self.resolve_text(vm, args[0]),
-                subtitle=self.resolve_text(vm, args[1]),
-                asset_id=args[2], flag=args[3],
-            ))
+            self.title_screen = TitleScreen()
+            return EngineAction('presentation', request, False, self.title_details(vm, args))
+        if y == 33:
+            at_least(3)
+            # 0009f420, not 0009f9fc: these two texts are NOT substituted.
+            panel = MessagePanel(self.read_text(vm, args[0]), self.read_text(vm, args[1]), args[2])
+            panel.validate()
+            self.message_panel = panel
+            return EngineAction('message_panel', request, False)
         if y in (1, 2):
             need(8 if y == 1 else 6)
             title = self.resolve_text(vm, args[0])

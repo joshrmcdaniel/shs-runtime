@@ -67,10 +67,12 @@ uv run --locked --extra desktop shs
 >
 > Example:
 >
+> ```
 > Episodes/
 >     Episode1.exp
 >     Episode2.exp
 >     ...
+> ```
 
 If your episode folder includes the original `shs_options.sav`, its category
 catalog supplies the original season/story groups. It can also be added
@@ -86,7 +88,7 @@ controls, formats and command-line import.
 
 The runtime implements the main menu, persistent episode library, grouped
 episode browser, dialogue animation, portrait masks, choices, character
-selection, relationship indicators, loading screens, word/grid/football mini
+selection, relationship indicators, episode/week intros, loading screens, word/grid/football mini
 games and save/load. F5 saves, F9 loads, and returning to the menu creates an
 automatic checkpoint. Tap once to reveal dialogue, then again to advance it.
 
@@ -106,6 +108,7 @@ To contribute code, tests, documentation or compatibility reports, start with
 - [Engine services](docs/ENGINE_ABI.md): native service contracts and coverage.
 - [UI assets](docs/UI_ASSETS.md) and [UI fidelity](docs/UI_FIDELITY.md).
 - [Main menu](docs/MAIN_MENU.md) and [episode catalog](docs/EPISODE_CATALOG.md).
+- [Episode introductions and week cards](docs/TITLE_SCREENS.md).
 - [Mini games](docs/MINIGAMES.md) and [story services](docs/STORY_SERVICES.md).
 - [Development and tests](docs/DEVELOPMENT.md), [distribution](docs/DISTRIBUTION.md)
   and [project provenance](docs/PROVENANCE.md).

@@ -5,6 +5,116 @@ Reference: SHS Android 1.0.9, `libshs09.so`, SHA-256
 These are host-service contracts; VM opcodes and EXP resource IDs are separate
 namespaces. All assets, text and bytecode come from the player's content.
 
+## Message panel (service 33)
+
+```text
+arguments : title_ref:s16, body_ref:s16, retained_argument:s16
+texts     : raw packed strings or dynamic slots; NO substitutions
+gate      : 1000 ms of active time, independently of retained_argument
+input     : acknowledgement after gate; earlier input is ignored, not queued
+result    : 0 on acknowledgement; no choice-result cell write
+```
+
+Dispatcher case `0x21` constructs UI type 2 through `000ad208`, passes raw
+strings from `0009f420` to `000ac73c`, attaches it, and retains the VM's whole
+argument frame. The compatible host requires at least three words; additional
+words are ignored and removed with the frame on completion. This is a generic
+message service, not a minigame result or an episode-specific exception.
+
+`000ac73c` copies both texts, stores a3 at panel `+0x54`, and writes **1000**
+to the countdown at `+0x50`. `000acb18` subtracts elapsed milliseconds.
+`000abb3c` ignores input while the counter is positive. Elapsed time alone
+does not dismiss the screen. The normal acknowledgement path `000ab7fc`
+marks both callback and removal flags; virtual callback `000a6448` calls
+`0009e888(host,0)`, which removes the pending arguments and puts zero in R.
+The panel hides dialogue art, preserving the underlying logical dialogue and
+background state. There is no score, audio request or result-cell mutation.
+
+The shared callback wrapper `000ab8b8` first consumes a queued service-16
+screen-transition selector. `0007f1a4` maps selector 20 to 1/2 using exactly
+one `lrand48()` call (`1 + (value & 1)`); other nonzero selectors do not draw.
+`0007efe8(...,4)` clears the queue and `0007f0e8` advances to the callback on
+the next active update. The runtime preserves the random draw and queue clear
+before resuming. The outgoing transition's composition and frame ordering,
+and consumption by other panel types, remain fidelity work. In particular,
+this random stream is also used when the next word game deals its options.
+
+### Presentation
+
+`000abd0c` constructs the body from layout 24, the heading from layout 15,
+and the vertically flipped bottom cap from layout 25. `0007fabc(...,1)`
+selects blue skin 204, with common image pack 126. Original layout sizes and
+image alpha are retained. `000ac4dc` centers the background at GL `(160,240)`.
+The body sprite is centered there as well. Its height for native episode ID
+zero is explicitly `layout24.width - 40` (240 pixels in Android 1.0.9).
+This applies to built-in Football Star regardless of its imported filename.
+Other episode IDs use the expanded layout height. The heading sits immediately
+above the body with a two-pixel overlap; the bottom cap sits below with the
+same overlap. The native drawing path uses these separate sprites even when
+the earlier layout-measurement path selected a taller header.
+
+| Text | APK bitmap font | Nominal height / gap | Alignment |
+| --- | --- | --- | --- |
+| Heading | `ArialRoundedMTBold20` | 10 / 7 | 10: center, no automatic wrap |
+| Body | `ArialRoundedMTBold16` | 10 / 3 | 21: top-left, wrap at layout width minus 25 |
+| Continue / Wait | `TrebuchetMS_Bold14` | 16 / 5 | 5: top-left |
+| Footer hint | `ArialRoundedMTBold11` | 11 / 0 | centered in the footer |
+
+Heading/body RGB is `(41,104,221)`. Heading scale is 1 for fewer than 31
+Latin-1 bytes and 0.88 otherwise. Explicit body newlines survive. The body
+label retains layout 24's original height even when its parent expands.
+The built-in body's line origin is 15 pixels below the sprite's top. For
+nonzero episode IDs the child-node calculation gives top-origin Y equal to
+the expanded sprite height plus half the original layout height. These
+unusual coordinates come from `000abd0c`, not automatic vertical centering.
+
+`000aca28` uses localized string 29 when ready; otherwise string 30 followed
+by `" (" + ((remaining_ms+900)//1000) + ")"`. The native rounding can display
+zero briefly before input unlocks. `000acc28` grows the shared continuation
+node from 0.001 to 1 over 250 ms at X 245, on the bottom cap's lower edge.
+The child artwork is common frame 5; its text node is at local `(-6,8)` with
+size `(40,0)` and anchor `(0.5,0.5)`. Footer strings are 39 during the gate
+and 36 afterward. Any screen acknowledgement works; desktop Enter/Space
+provide the same action. The gear and loss of focus pause the active clock.
+
+For nonzero episode IDs, `000ac73c` measures the body with font
+`ArialRoundedMTBold14`, height 14/gap 5, at layout node 24's width. It adds
+one plus a legacy font-origin field at application `+0x3a474`, rounds to an
+even height, then expands the root through `00058a54` without shrinking below
+the layout minimum. That legacy field's initialized value is still unverified;
+the renderer currently uses zero for it. Built-in Football Star's fixed
+height does not depend on it. Pixel-level confirmation against an original
+recording, cross-label kerning history and outgoing transitions remain open.
+
+### Saves and verification (version 9)
+
+```text
+engine.message_panel : null | {
+    title: Latin-1 string,
+    text: Latin-1 string,
+    argument: s16,
+    elapsed_ms: integer in [0,1000]
+}
+pending : {name: "message_panel", details: {}}
+```
+
+Load validates the panel's text/argument against the retained VM frame and
+rejects an absent or mismatched panel, invalid time or extra state fields.
+The native binary's own panel loader resets its counter to 4000; these JSON
+saves use the compatible engine's format and preserve the actual remaining
+reading time. Older JSON versions gain a null panel. An older unsupported
+service-33 checkpoint dispatches its retained call once, without re-executing
+earlier instructions or consuming randomness on load.
+
+Football Star scene 25011, PC 629 passes `(3016,3023,4000)`: its Instructions
+panel before the thinking-word game. Confirmation reaches service 71 at PC
+638 through the original bytecode. Authored tests cover both yield encodings,
+raw/dynamic/empty strings, extra arguments, gate boundaries, the zero callback,
+unchanged result cells, transition randomness, save/load and malformed saves.
+An optional player-content test covers the reported instructions and desktop
+rendering, mouse input, focus/menu pause and restoration. A private checkpoint
+reached through the full football match also verified this transition.
+
 ## Dialogue panel close (service 39)
 
 ```text
@@ -283,13 +393,26 @@ Updating an existing badge retains its original skin and entrance progress.
 Text color is (69,107,176) for `Free Time`, otherwise (223,163,52).
 
 Layout node 2 centers the icon at (38,30). Text uses ArialRoundedMTBold16,
-nominal height 14, gap 1, width 110; the native function has string-length and
+nominal height 14, gap 1, content size 110 × 20; the native function has string-length and
 named-label positioning exceptions, represented by `SceneBadge.text_position`.
+The length-15-through-17 branch sets GL node position (123,55), taking
+precedence over the later named checks. Its Y constant is `0x425c0000` (55),
+not 46. This branch includes `Counselor's Office`.
+
+Alignment flags `0x11` in `FUN_0004dc20` select wrapping with left/top
+alignment. With the label's `(0.5,0.5)` anchor, GL position `(x,y)`, and scale
+`s`, the downward origin inside the badge is `(x - 55*s, 60 - y + 10*s)`.
+Every wrapped line starts at that same X. Text draws downward from the
+label's local zero, so the half-height is added when converting to screen Y;
+subtracting it clips the first line into the badge's upper border. The desktop
+uses this native transform rather than centering the measured text block.
+
 The badge moves horizontally in 200 ms from center x=-85.5 to x=100.
 Ad-free top inset is 10 (`FUN_0007d280`); the original ad-enabled path uses 55.
-The desktop uses the ad-free placement. Native multiline horizontal alignment
-is approximated by centering the measured block; future pixel comparisons may
-refine that typography.
+The desktop uses the ad-free placement. Authored-font rendering tests cover
+single-line, wrapped and scaled labels and verify that drawing leaves badge
+state intact. These placements are checked against the binary and supplied
+assets; comparison with frames from a running original remains outstanding.
 
 Service 89 sets scene byte +0x3f8 for the **next dialogue**, then completes with
 zero. `FUN_000aaa40` consumes and clears it; `FUN_0007c9e8` rotates the dialogue

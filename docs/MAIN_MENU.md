@@ -178,7 +178,7 @@ services remain suspended and visible to the player.
 | File, relative to the library | Schema / behavior |
 | --- | --- |
 | `player.json` | `{version:1, selected:SHA256, music:bool, sound:bool, order:"episode"\|"title"}`; old files default to episode order |
-| `saves/<episode-sha>.shs-save.json` | Existing manual F5/F9 slot, runtime schema v6 |
+| `saves/<episode-sha>.shs-save.json` | Existing manual F5/F9 slot, [runtime save schema](RUNTIME.md#runtime-save-schema-version-11) |
 | `saves/<episode-sha>.shs-auto.json` | Automatic checkpoint on menu return and application exit, same schema |
 
 Preferences and saves use temporary files plus atomic replacement. Resume after
@@ -190,8 +190,10 @@ slot; the manual slot is preserved. Existing libraries without preferences use
 their most recent save, or the New Girl metadata ID `(5,9)` when no save exists.
 
 Music/Sound preferences gate playback separately from VM-visible audio state.
-The current audio implementation remains simplified (including no restored
-music seek position and no verified menu music loop).
+Leaving a live episode pauses its music stream; resuming that same session
+continues from its current position. Starting another episode, restarting, or
+loading a saved session instead loads its requested cue. Playback position is
+not saved to disk, and no native menu music loop has been verified.
 
 ## 5. Executable and content boundary
 

@@ -53,6 +53,8 @@ class Resources:
 
 def answer_screen(session, value=None):
     """Walk story fixtures through the real reveal gate before continuing."""
+    if session.pending.name == 'presentation':
+        session.tick(4000)
     if session.pending.name == 'dialogue' and not session.engine.dialogue_animation.complete:
         session.answer()  # Request completion without acknowledging the VM.
         session.tick(2000)
