@@ -155,6 +155,27 @@ class Raster:
     pixels: bytes
     mode: str = 'RGBA'
 
+    def normalize_portrait(self, mask):
+        """Convert supported 2x episode portraits to the mask's logical scale.
+
+        Imported New Girl art includes 256x256 and 226x256 PNGs. This is a
+        compatibility rule for those larger variants, not an operation found
+        in Android's native mask routine. Native-size images stay untouched;
+        other oversized dimensions remain explicit errors in portrait_mask().
+        """
+        if (self.mode == 'RGBA' and mask.mode == 'A'
+                and (self.width > mask.width or self.height > mask.height)
+                and self.width % 2 == self.height % 2 == 0
+                and 0 < self.width <= mask.width * 2 and 0 < self.height <= mask.height * 2):
+            from PIL import Image
+            size = self.width // 2, self.height // 2
+            # Pillow resamples RGBA through premultiplied alpha, so invisible
+            # RGB does not add a fringe around the smaller portrait.
+            image = Image.frombytes(self.mode, (self.width, self.height), self.pixels)
+            image = image.resize(size, Image.Resampling.BOX)
+            return Raster(*size, image.tobytes())
+        return self
+
     def portrait_mask(self, mask):
         """FUN_00059eb4: bottom-align to 128x150 and clear nonzero mask pixels.
 
@@ -163,7 +184,8 @@ class Raster:
         """
         if (self.mode != 'RGBA' or mask.mode != 'A'
                 or self.width > mask.width or self.height > mask.height):
-            raise UIAssetError('Unsupported portrait mask dimensions or pixel mode')
+            raise UIAssetError(f'Unsupported portrait {self.width}x{self.height} {self.mode} '
+                               f'for mask {mask.width}x{mask.height} {mask.mode}')
         left, top = (mask.width - self.width) // 2, mask.height - self.height
         out = bytearray(self.pixels)
         for y in range(self.height):

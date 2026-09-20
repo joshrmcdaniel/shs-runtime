@@ -33,7 +33,8 @@ class DialogueRenderer:
         if image is None:
             return None
         raster = Raster(*image.get_size(), pygame.image.tobytes(image, 'RGBA'))
-        masked = raster.portrait_mask(self.pack(268).images[0])
+        mask = self.pack(268).images[0]
+        masked = raster.normalize_portrait(mask).portrait_mask(mask)
         # Match the display format after creating the masked RGBA buffer.
         # Cocoa's opaque BGRA canvas can otherwise copy transparent RGB
         # instead of blending it, exposing white pixels and black mask corners.

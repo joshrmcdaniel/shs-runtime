@@ -18,8 +18,10 @@ from .desktop_picker import CharacterPickerRenderer
 from .desktop_loading import LoadingRenderer
 from .desktop_message import MessageRenderer
 from .desktop_title import TitleRenderer
+from .desktop_input import InputRenderer, INPUT_RECT
 from .fonts import TextStyle
 from .runtime import SaveError, Session
+from .text_input import accept_name_character, validate_name
 from .ui_assets import ImagePack, Rect
 from .vm import VMError
 
@@ -54,6 +56,11 @@ class Desktop:
         self.loading_renderer = LoadingRenderer(session.resources, self.story_text, self.dialogue_renderer)
         self.message_renderer = MessageRenderer(session.resources, self.story_text, self.dialogue_renderer)
         self.title_renderer = TitleRenderer(session.resources, self.story_text, self.dialogue_renderer)
+        self.input_renderer = InputRenderer(session.resources, self.story_text, self.dialogue_renderer)
+        self.input_action = None
+        self.input_error = None
+        self.input_keyboard = False
+        self.text_input_started = None  # Force the first sync to set SDL's state.
         self.picker_pointer_down = False
         self.images = OrderedDict()
         self.buttons = []
@@ -204,25 +211,61 @@ class Desktop:
             except (ContentError, pygame.error) as error:
                 logging.warning('Sound %s cannot be played: %s', engine.sound_id, error)
 
+    def _sync_text_input(self):
+        action = self.session.pending
+        if action is not None and action.name != 'text_input':
+            action = None
+        if action is not self.input_action:
+            self.input_action, self.input_error = action, None
+            self.input_keyboard = action is not None
+            if action is not None:
+                action.details.setdefault('draft', action.details['default'])
+        enabled = bool(action and self.input_keyboard and self.active and not self.menu_open
+                       and not self.input_error and not self.error)
+        if enabled != self.text_input_started:
+            (pygame.key.start_text_input if enabled else pygame.key.stop_text_input)()
+            self.text_input_started = enabled
+        if enabled and hasattr(self, 'viewport'):
+            x, y, w, h = INPUT_RECT
+            pygame.key.set_text_input_rect(pygame.Rect(
+                self.viewport.x + x * self.viewport.width / 320,
+                self.viewport.y + y * self.viewport.height / 480,
+                w * self.viewport.width / 320, h * self.viewport.height / 480))
+
+    def _submit_input(self, action):
+        if self.input_error:
+            self.input_error, self.input_keyboard = None, True
+            return
+        value = action.details.get('draft', action.details['default'])
+        if not value:
+            self.input_keyboard = False  # Empty Return hides the native keyboard.
+            return
+        try:
+            validate_name(value, **self.session.name_input_metrics())
+        except ValueError as error:
+            self.input_error, self.input_keyboard = str(error), False
+            return
+        self._attempt(lambda: self.session.answer(value))
+
     def render(self):
         self.buttons = []
         action = self.session.pending
+        self._sync_text_input()
         token = self._screen_token()
         if token != self.screen_token:
             self.screen_token, self.scroll = token, 0
-            if action and action.name == 'text_input':
-                action.details.setdefault('draft', action.details['default'])
-                pygame.key.start_text_input()
-            else:
-                pygame.key.stop_text_input()
         self.canvas.fill((14, 20, 32))
         details = action.details if action else {}
-        if action and action.name in ('word_grid', 'football', 'character_picker', 'loading', 'message_panel', 'presentation') and not self.error:
+        if action and action.name in ('word_grid', 'football', 'character_picker', 'loading', 'message_panel', 'presentation', 'text_input') and not self.error:
             try:
                 renderer = {'word_grid': self.grid_renderer, 'football': self.football_renderer,
                             'character_picker': self.picker_renderer, 'loading': self.loading_renderer,
-                            'message_panel': self.message_renderer, 'presentation': self.title_renderer}[action.name]
-                buttons = renderer.draw(self.canvas, self.session)
+                            'message_panel': self.message_renderer, 'presentation': self.title_renderer,
+                            'text_input': self.input_renderer}[action.name]
+                options = (dict(error=self.input_error,
+                                cursor_visible=self.text_input_started and pygame.time.get_ticks() % 1000 < 500)
+                           if action.name == 'text_input' else {})
+                buttons = renderer.draw(self.canvas, self.session, **options)
                 self.buttons = [(pygame.Rect(*(round(value * 1.5) for value in rect)), command)
                                 for rect, command in buttons]
                 self.scroll = self.max_scroll = 0
@@ -312,12 +355,6 @@ class Desktop:
                 rect = pygame.Rect(24, y, 432, height)
                 self._button(label, rect, ('choose', index), enabled=details['enabled'][index])
                 y += height + 10
-        elif action.name == 'text_input':
-            y = self._text(details['title'], 24, y, 432, font=self.heading, color=ACCENT)
-            y = self._text(details['prompt'], 24, y + 10, 432) + 18
-            pygame.draw.rect(self.canvas, (49, 62, 84), pygame.Rect(24, y, 432, 48), border_radius=6)
-            y = self._text(details.get('draft', '') + '|', 36, y + 12, 408) + 22
-            y = self._text('Type your answer, then press Enter.', 24, y, 432, font=self.small, color=MUTED)
         elif action.name in ('finished', 'episode_exit'):
             y = self._text('Episode complete', 24, y, 432, font=self.heading, color=ACCENT)
         elif action.name == 'unhandled_yield':
@@ -332,7 +369,7 @@ class Desktop:
         self.scroll = min(self.scroll, self.max_scroll)
         self.canvas.set_clip(None)
         pygame.draw.rect(self.canvas, PANEL, (0, 640, 480, 80))
-        if action and action.name in ('dialogue', 'presentation', 'text_input') and not self.error:
+        if action and action.name in ('dialogue', 'presentation') and not self.error:
             self._button('Continue  ›', pygame.Rect(310, 650, 148, 44), ('continue',), small=True)
         self._button('Save', pygame.Rect(22, 650, 83, 44), ('save',), small=True)
         self._button('Load', pygame.Rect(115, 650, 83, 44), ('load',), small=True)
@@ -353,7 +390,8 @@ class Desktop:
                 grid.round if grid else None, (football.round, football.phase) if football else None,
                 (dialogue.finish_requested, dialogue.complete) if dialogue else None,
                 tuple(picker.order) if picker else None,
-                (title.reveal_width == 320, title.ready) if title else None)
+                (title.reveal_width == 320, title.ready) if title else None,
+                details.get('draft'), self.input_error)
 
     def _present(self):
         engine = self.session.engine
@@ -410,6 +448,7 @@ class Desktop:
             self._text(self.message, 96, 320 + 58 * len(entries), 300, font=self.small)
 
     def command(self, command):
+        self._sync_text_input()
         kind = command[0]
         if kind == 'menu':
             self.picker_pointer_down = False
@@ -440,17 +479,23 @@ class Desktop:
                 self._notice(str(error))
         elif not self.error:
             action = self.session.pending
+            if action and action.name == 'text_input' and not self.menu_open and self.active:
+                if kind in ('input_dismiss', 'input_focus'):
+                    self.input_error, self.input_keyboard = None, True
+                elif kind == 'continue':
+                    self._submit_input(action)
             if action and action.name == 'character_picker' and kind in ('choose', 'continue'):
                 self._attempt(lambda: self.session.answer(command[1] if kind == 'choose' else None))
             if kind == 'choose' and action and action.name in ('choice', 'word_game'):
                 self._attempt(lambda: self.session.answer(command[1]))
-            elif kind == 'continue' and action and action.name in ('presentation', 'dialogue', 'text_input', 'message_panel'):
-                self._attempt(lambda: self.session.answer(action.details.get('draft', action.details.get('default', '')))
-                              if action.name == 'text_input' else self.session.answer())
+            elif kind == 'continue' and action and action.name in ('presentation', 'dialogue', 'message_panel'):
+                self._attempt(self.session.answer)
             elif action and action.name == 'football' and kind in ('continue', 'choose'):
                 self._attempt(lambda: self.session.answer(command[1] if kind == 'choose' else None))
+        self._sync_text_input()
 
     def handle_event(self, event):
+        self._sync_text_input()
         if event.type == pygame.QUIT:
             return False
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -465,7 +510,11 @@ class Desktop:
             self.picker_pointer_down = False
             if not self.active and self.session.engine.word_grid:
                 self.session.grid_pointer('cancel')
+            self._sync_text_input()
+            return True
         action = self.session.pending
+        if action and action.name == 'text_input' and (not self.active or self.error):
+            return True
         if (action and action.name == 'character_picker' and not self.menu_open and not self.error
                 and event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and event.button == 1):
             x = (event.pos[0] - self.viewport.x) * 320 / self.viewport.width
@@ -526,12 +575,20 @@ class Desktop:
                     self.command(('choose', index))
             elif action and action.name == 'text_input' and event.key == pygame.K_BACKSPACE:
                 action.details['draft'] = action.details.get('draft', '')[:-1]
+                self.input_error, self.input_keyboard = None, True
             elif event.key in (pygame.K_UP, pygame.K_DOWN, pygame.K_PAGEUP, pygame.K_PAGEDOWN):
                 delta = -60 if event.key in (pygame.K_UP, pygame.K_PAGEUP) else 60
                 self.scroll = min(self.max_scroll, max(0, self.scroll + delta))
         elif event.type == pygame.TEXTINPUT and action and action.name == 'text_input':
-            text = event.text.encode('latin-1', errors='ignore').decode('latin-1').replace('\x00', '')
-            action.details['draft'] = (action.details.get('draft', '') + text)[:20]
+            if not self.input_error:
+                metrics = self.session.name_input_metrics()
+                for char in event.text:
+                    draft, error = accept_name_character(action.details['draft'], char, **metrics)
+                    action.details['draft'] = draft
+                    if error:
+                        self.input_error, self.input_keyboard = error, False
+                        break  # A modal alert also stops the rest of a paste.
+                    self.input_keyboard = True
         elif event.type == pygame.MOUSEWHEEL:
             self.scroll = min(self.max_scroll, max(0, self.scroll - event.y * 40))
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -542,6 +599,7 @@ class Desktop:
                     if rect.collidepoint(x, y):
                         self.command(command)
                         break
+        self._sync_text_input()
         return True
 
     def tick(self, elapsed_ms):

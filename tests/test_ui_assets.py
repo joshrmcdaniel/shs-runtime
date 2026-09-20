@@ -33,6 +33,37 @@ class UIAssetTests(unittest.TestCase):
         masked = image.portrait_mask(pack.images[0])
         self.assertEqual(masked.pixels, bytes((1, 2, 3, 200, 0, 0, 0, 0)))
 
+    def test_double_size_portraits_preserve_alpha_and_mask_after_resampling(self):
+        # Two authored 2x2 source blocks. Transparent white must not pollute
+        # the first block's opaque red when converted to one logical pixel.
+        red = bytes((240, 0, 0, 255))
+        hidden = bytes((255, 255, 255, 0))
+        blue = bytes((0, 0, 240, 255))
+        image = Raster(4, 2, red + hidden + blue * 2 + hidden * 2 + blue * 2)
+        mask = Raster(2, 3, b'\xff' * 4 + b'\0\x01', 'A')
+        normalized = image.normalize_portrait(mask)
+        self.assertEqual((normalized.width, normalized.height), (2, 1))
+        self.assertEqual(normalized.pixels, bytes((239, 0, 0, 64, 0, 0, 240, 255)))
+        self.assertEqual(normalized.portrait_mask(mask).pixels,
+                         bytes((239, 0, 0, 64, 0, 0, 0, 0)))
+        self.assertEqual(image.width, 4)
+        self.assertEqual(image.pixels, red + hidden + blue * 2 + hidden * 2 + blue * 2)
+
+    def test_native_portraits_are_unchanged_and_unknown_sizes_still_fail(self):
+        mask = Raster(4, 5, b'\0' * 20, 'A')
+        native = Raster(4, 4, bytes((5, 10, 15, 128)) * 16)
+        self.assertIs(native.normalize_portrait(mask), native)
+        self.assertEqual(native.portrait_mask(mask), native)
+        for width, height in ((8, 8), (6, 8)):
+            image = Raster(width, height, bytes((5, 10, 15, 255)) * (width * height))
+            normalized = image.normalize_portrait(mask)
+            self.assertEqual((normalized.width, normalized.height), (width // 2, height // 2))
+            self.assertEqual(normalized.portrait_mask(mask), normalized)
+        for width, height, mode in ((7, 8, 'RGBA'), (10, 12, 'RGBA'), (8, 8, 'A')):
+            image = Raster(width, height, b'\0' * (width * height * (4 if mode == 'RGBA' else 1)), mode)
+            with self.subTest(width=width, height=height, mode=mode), self.assertRaisesRegex(UIAssetError, 'for mask 4x5 A'):
+                image.normalize_portrait(mask).portrait_mask(mask)
+
     def test_image_extents_encoding_and_references_are_checked(self):
         good = image_pack()
         for data in (good[:-1], good + b'x', image_pack(marker=-3),

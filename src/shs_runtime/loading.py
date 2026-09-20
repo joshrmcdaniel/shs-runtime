@@ -5,7 +5,17 @@ overlay only once the counter is strictly greater than 3000.
 """
 from dataclasses import dataclass
 
-from .vm import VMError
+from .vm import KiwiVM, VMError, VMStop
+
+
+def loading_waits(vm: KiwiVM, request: VMStop) -> bool:
+    """Read the dispatcher's first frame slot, even for a zero-word call.
+
+    FUN_0009fe3c reads stack[SP - argc] without checking argc. With no
+    arguments this is retained backing at SP, not an implicit zero. Unknown
+    backing must still stop explicitly through read_word().
+    """
+    return bool(request.args[0] if request.args else vm.read_word(vm.stack_base + vm.sp))
 
 
 @dataclass

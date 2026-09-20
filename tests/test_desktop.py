@@ -157,6 +157,75 @@ class DesktopTests(unittest.TestCase):
                     self.assertEqual([tuple(target.get_at((x, 0))[:3]) for x in range(4)],
                                      expected[::-1] if flipped else expected)
 
+    def test_larger_portraits_are_normalized_before_masking_and_flipping(self):
+        os.environ['SDL_VIDEODRIVER'] = os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.desktop_dialogue import DialogueRenderer
+        from shs_runtime.ui_assets import Raster
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        pygame.display.init(); pygame.display.set_mode((8, 2))
+        pixels = bytes((20, 40, 60, 255, 80, 100, 120, 255,
+                        140, 160, 180, 255, 200, 220, 240, 255))
+        source = pygame.transform.scale(pygame.image.frombytes(pixels, (4, 1), 'RGBA'), (8, 2))
+        before = pygame.image.tobytes(source, 'RGBA')
+        renderer = DialogueRenderer(None, None, lambda _: source)
+        renderer.pack = lambda _: SimpleNamespace(images=(Raster(4, 3, b'\xff' * 8 + b'\0\0\1\0', 'A'),))
+        expected = [pixels[i:i + 4] for i in range(0, 16, 4)]
+        expected[2] = b'\0' * 4
+        for flipped in (False, True):
+            image = renderer.portrait(1, flipped)
+            self.assertEqual(image.get_size(), (4, 1))
+            self.assertEqual(pygame.image.tobytes(image, 'RGBA'),
+                             b''.join(expected[::-1] if flipped else expected))
+        self.assertEqual(pygame.image.tobytes(source, 'RGBA'), before)
+        self.assertEqual(source.get_size(), (8, 2))
+
+    @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user library is not present')
+    def test_imported_new_girl_portraits_render_through_opening_and_save_restore(self):
+        os.environ['SDL_VIDEODRIVER'] = os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.content import ContentLibrary
+        from shs_runtime.desktop import Desktop
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        with ContentLibrary(Path('.shs-library')) as library:
+            selector = 'SHS_The_New_Girl.exp'
+            if selector not in {entry['name'] for entry in library.episodes}:
+                self.skipTest('imported New Girl is not present')
+            resources = library.open_episode(selector)
+            ui = Desktop(Session(resources), audio=False)
+            for _ in range(200):
+                action = ui.session.pending
+                if action.name == 'dialogue':
+                    ui.session.tick(2000)  # Make the portrait entrance visible.
+                before = ui.session.snapshot()
+                ui.render()
+                self.assertIsNone(ui.error, (ui.session.scene, action.request.pc))
+                self.assertEqual(ui.session.vm.snapshot(), before['vm'])
+                self.assertEqual(ui.session.snapshot()['engine'], before['engine'])
+                if action.name == 'word_game':
+                    break
+                if action.name == 'choice':
+                    ui.session.answer(next(i for i, enabled in enumerate(action.details['enabled']) if enabled))
+                elif action.name == 'text_input':
+                    ui.session.answer('Alex')
+                elif action.name == 'character_picker':
+                    ui.session.answer(0); ui.session.tick(25); ui.session.answer()
+                else:
+                    self.assertIn(action.name, ('dialogue', 'presentation', 'vm_pause'))
+                    answer_screen(ui.session)
+            self.assertEqual(ui.session.pending.name, 'word_game')
+            self.assertEqual(ui._image(26021).get_size(), (256, 256))
+            self.assertEqual(ui.dialogue_renderer.portrait(26021, True).get_size(), (128, 128))
+            self.assertEqual(ui.dialogue_renderer.portrait(26005, False).get_size(), (113, 128))
+            saved = ui.session.snapshot()
+            pixels = pygame.image.tobytes(ui.canvas, 'RGB')
+            ui.session = Session.from_snapshot(resources, saved)
+            ui.render(); self.assertIsNone(ui.error)
+            self.assertEqual(ui.session.snapshot(), saved)
+            self.assertEqual(pygame.image.tobytes(ui.canvas, 'RGB'), pixels)
+
     def test_window_input_save_load_and_resized_mouse_coordinates(self):
         os.environ['SDL_VIDEODRIVER'] = 'dummy'
         os.environ['SDL_AUDIODRIVER'] = 'dummy'

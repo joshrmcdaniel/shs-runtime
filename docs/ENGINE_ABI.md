@@ -120,7 +120,7 @@ All rows derive from `native-yield-dispatcher.c`. Additional evidence is in `nat
 | 88 (`58`) | T(1) | Queues substituted notification in panel-3 `+0xf0`; next dialogue consumes it. Original notice font, portrait-relative letter motion, length-based fade and tap dismissal; see [notification contract](STORY_SERVICES.md#dialogue-notifications-service-88). | 0 | C |
 | 89 (`59`) | none | Sets a one-shot flag for the next dialogue: box rotation and adjusted reveal delay. `FUN_0007c9e8`. | 0 | C |
 | 90 (`5a`) | icon a1, optional T(2) when a2!=-1 | Nonblocking scene badge: -1 removes it; otherwise icon/text, layout 67 and 200 ms entrance. `FUN_0007b97c`. | 0 | C |
-| 91 (`5b`) | bool(a1) | Loading overlay gates VM execution until active time >3000 ms. Zero argument completes its frame immediately; nonzero retains it until `FUN_0009ea70` clears the overlay. [Contract](STORY_SERVICES.md#loading-overlay-service-91). | R=0; UI cells unchanged | P |
+| 91 (`5b`) | bool(stack[SP-argc]), even when argc=0 | Loading overlay gates VM execution until active time >3000 ms. A zero wait value completes the supplied frame immediately; nonzero retains it until `FUN_0009ea70` clears the overlay. Zero-argument calls read retained backing at SP. [Contract](STORY_SERVICES.md#loading-overlay-service-91). | R=0; UI cells unchanged | P |
 | 92 (`5c`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 93 (`5d`) | none required by case | Explicit native default/no-op path; ordinary completion still removes the supplied argument frame. | 0 | X |
 | 94 (`5e`) | 22 words; six weighted play tables and six instruction references | Football: nine changing targets, drives, halves and sudden death. [Frame and rules](MINIGAMES.md#4-service-94-football); [presentation](FOOTBALL_UI.md). | home minus away; saves both scores | P |
@@ -331,7 +331,7 @@ for the text schema, algorithms, colors, and evidence addresses.
 
 ### 4.3 Services 17/40 and 78: UI-owned data
 
-Services 17 and 40 select UI type 15 and pass substituted title, prompt, and initial text to `FUN_000d4440`, with an additional constant 20 at the caller. Callback `FUN_000d3f5c` copies the entered string (panel +0x9c) to dynamic slot 0, resumes with handle `0x7ff5`, and copies it into host last-input storage +0x54. This callback is implemented. Cancellation, keyboard/widget behavior, and the role of the extra constant still require native analysis; the prototype imposes a 20-character Latin-1 input limit.
+Services 17 and 40 select UI type 15 and pass substituted title, prompt, and initial text to `FUN_000d4440`, with an additional constant 20 at the caller. Callback `FUN_000d3f5c` copies the entered string (panel +0x9c) to dynamic slot 0, resumes with handle `0x7ff5`, and copies it into host last-input storage +0x54. Typing actually permits at most **16 ASCII alphanumeric characters**, with uppercase characters after the first converted to lowercase. Before each append, the existing name width plus cursor width must be below 240 logical pixels. Empty Return does not submit. Native layouts, fonts, error alert, validation, and the callback are implemented; the desktop uses SDL keyboard input. See the [name-entry contract](NAME_INPUT.md) for evidence, geometry, save handling, and remaining fidelity limits.
 
 Service 78 selects UI type 5. Its factory copies `(text_ref, count, array_word_address)` into a portrait selector. `FUN_000d2238` initializes panel +0x70 to indices 0 through count-1; `FUN_000d1d78` swaps indices and portrait pointers. `FUN_000d2008` handles touch release and a separate confirmation checkmark. `FUN_000d1b48` returns the selected **original index**, not the character ID, and writes UI result cell 0. The first portrait is selected initially. The full frame, input, animation and save contracts are in [STORY_SERVICES.md](STORY_SERVICES.md#portrait-selection-service-78).
 
@@ -384,8 +384,9 @@ player selection. Shuffle requires native PRNG semantics and stays unsupported.
 The panel stores initial/remaining time at +0x4c/+0x48. `FUN_000ae4f4` subtracts
 elapsed time and uses the configured timeout selection; `FUN_000ad6b4` divides
 the time by 1000 for its display widget, establishing milliseconds. Nonpositive
-durations disable the timer. The session completes at remaining time zero;
-the native comparison is strictly below zero on a frame update. An incremental
+durations disable the timer. Expiry is strictly below zero on an active frame
+update, matching the native comparison. At exactly zero the frame remains
+pending and can still be selected or saved; a zero-length tick does not expire it. An incremental
 choice's timeout selection passes through the same mapping as a clicked option.
 An invalid mapped timeout is an explicit runtime error, rather than a native
 out-of-bounds read. `portrait_mode` is not an expression: `FUN_000ae5d4` passes
@@ -398,7 +399,9 @@ the recovered assets, screenshot-based placement and remaining differences.
 Rendering, hover, scrolling and opening the host menu leave the pending VM
 frame intact. The desktop suspends timer ticks while that menu is open; a
 selection still uses the original zero-based index/custom mapping, and saves
-retain the existing pending choice and remaining milliseconds.
+retain the existing pending choice and remaining milliseconds. Timed panels
+display the original circular timer (assets 708/709 and layout 22); its elapsed
+sweep is derived from that saved clock, without a separate animation timer.
 
 Relevant decompiler excerpt from `FUN_000ad6b4` (panel +0x4c is the initial
 duration, +0x48 the remaining time):

@@ -254,7 +254,23 @@ equivalence still requires comparison with a running original game. Shared
 kerning and measurements performed by other UI paths, such as `FUN_000d9038`,
 are not yet included in the dialogue font-history model.
 
-### Text input and wrapping
+### Name-entry screen
+
+Services 17/40 now use the APK's layout bank (15/43/46), image packs
+126/204/16, and entry shadow 706. Resource **707 belongs to the rejection
+alert**, rather than the normal name screen. The title uses Arial Rounded
+30, the prompt 16, and the entered name 28; the cursor is Pajama Hip 26.
+Setup colors all four blue. The ordinary header, body, and footer are
+centered at GL `(160,415)`, `(160,340)`, and `(160,267)` respectively.
+
+Return on the keyboard is the verified submission path. This panel does not
+attach the portrait-selector checkmark or common gear. The desktop host menu
+is accessible through Escape. Full coordinates, title/cursor font-origin
+details, the error alert, input limits, and remaining uncertainties are in
+[NAME_INPUT.md](NAME_INPUT.md). This supersedes the provisional screen
+identification in `CONTINUING.md`.
+
+### Story text and wrapping
 
 `FUN_0004d3f8` consumes NUL-terminated bytes. The current text core accepts
 Latin-1 strings, matching the KiWi host text representation. The implemented
@@ -400,6 +416,18 @@ or 40 as the theme-colored circle. `FUN_0009c034` aligns the art's bottom to
 mode 2 except for theme 3. The original 128 × 150 portrait mask is applied
 before drawing; the portraits are no longer resized to an arbitrary 160 × 180
 desktop rectangle.
+
+The imported New Girl's 256 × 256 and 226 × 256 portrait variants use a
+documented compatibility conversion to half size before masking and horizontal
+flipping. This preserves their aspect ratio, transparency and bottom alignment;
+the shared dialogue, choice and appearance-picker renderer uses the same path.
+Native-size portraits and the full-resolution source cache remain unchanged.
+The available Android implementation does not establish the original scaling
+or filter for these larger variants, so this conversion remains an inference.
+See [UI_ASSETS.md](UI_ASSETS.md#portrait-mask) for its precise bounds. Authored
+tests cover alpha-aware reduction, mask order and both orientations; an optional
+local-content check renders the imported episode through its opening and verifies
+save restoration.
 
 Masked portrait surfaces must be converted to the display's alpha-aware pixel
 format before blitting. On the macOS Cocoa driver, an opaque canvas can retain
@@ -622,6 +650,8 @@ Research evidence is in `native-choice-layout.c` (excluded from packages):
 | `FUN_000858cc`, `FUN_000d6afc`, `FUN_0006bd5c` | Pajama Hip title atlas, Arial Rounded body/option atlas, and different title/description/option line metrics |
 | `FUN_000d6800` | Translucent white panel color with alpha 243 and theme-dependent selection colors |
 | Layout 18, common frames 47 and 49 | Original footer and gear artwork |
+| `FUN_000d5878`, `FUN_000d9038`, `FUN_000d6afc` | Positive choice durations enable lower layout 22; ordinary choices hide its score-capsule root 13 and descendants |
+| `FUN_000ad6b4`, `FUN_00082744` | Shared timed-choice widget: resource 708 under a radial sweep of 709, advancing from elapsed/total to 100 percent over the remaining time |
 
 The title uses `PajamaHip26` for blue, `PajamaHip266` for pink, and the gray/gold
 variants for other themes. Its nominal height/gap is 26/8; portrait headings
@@ -647,7 +677,8 @@ description_y = max(26, measured_title_height + 2)
 header_height = ceil(max(portrait ? 112 : 38,
                          description_y + description_height + 6))
 row_height[i] = max(44, ceil(option_ink_height[i] + 16))
-H = header_height + sum(row_height) + 20
+footer_height = timed ? layout22.height : 20
+H = header_height + sum(row_height) + footer_height
 panel = (20, max(32, floor((480-H)/2) + 11), 280, H)
 title_origin = (panel.x + header_node.x, panel.y - 9)
 description_origin = (panel.x + 7, panel.y + description_y)
@@ -671,15 +702,39 @@ and the host menu are frontend state and are not included in game saves.
 
 The gear opens a host Resume/Save/Load menu; the original settings/menu flow
 remains unimplemented. Opening it suspends desktop timer ticks, and keyboard
-choice shortcuts do not bypass it. Ordinary timed choices currently show remaining
-seconds in the footer; the native timer widget and 0.2-second option entrance
-animations remain to be implemented. Dialogue retains its previous placement;
+choice shortcuts do not bypass it. Dialogue retains its previous placement;
 only choices currently apply the recovered 12-row portrait crop.
+
+Timed choices now use the APK's circular timer and a separate lower panel from
+layout 22, with its ordinary score capsule hidden. Node 10 supplies the clock
+background rectangle; resources 708 and 709 are each 61 by 60 pixels. The
+progress texture covers the base clockwise from twelve o'clock as elapsed time
+increases (`001441b4`, `00138ac8`, `001388a8`). The static base is present before
+the first active tick. The footer retains its ordinary instruction without the
+prototype numeric countdown suffix. Nonpositive choice durations have neither
+the timer nor its extra panel space. Word choices share the same sweep helper
+and retain their separate score display.
+
+The lower panel occupies the supplied layout's 60-pixel height below the last
+row. This placement follows this frontend's existing 44-pixel rows and expanded
+text; it is not the Android renderer's complete count-specific placement
+algorithm. For tall lists, the timer remains pinned above y=421 while the choice
+rows scroll in a reduced viewport. Option hit rectangles stop above it, so the
+timer cannot select an obscured row. These scrolling rules remain desktop
+accommodations. The native 0.2-second ordinary-choice entrance is still unmodeled.
+
+The sweep derives entirely from the session's saved remaining milliseconds.
+Rendering does not consume time, resume the VM or draw randomness. Both service
+1 and incremental services 2–4 wait at exactly zero; the next positive active
+tick applies the configured timeout selection, including any custom return
+mapping. Pausing or losing window focus freezes both the clock and its display.
 
 Verification covers the original New Girl choice and both VM continuations,
 blue/pink themes, portrait-free panels, multiline/tall option lists, disabled
 options, custom return values, scaled mouse coordinates, menu timer suspension,
-and save/load while a choice is pending. The user images remain local references
+save/load while a choice is pending, authored radial-sweep pixels, absence of
+timers on untimed choices, scrolling around the timer and the exact expiry
+boundary for both choice formats. The user images remain local references
 and are excluded from wheel/source distributions.
 
 ## Mini-game presentation

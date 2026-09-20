@@ -412,6 +412,8 @@ argument as a **VM word address**. Overlapping source/destination ranges work
 because both source strings are read first. A dynamic-slot handle is valid as
 a source but cannot serve as the destination.
 
+### Copy last input (service 28)
+
 Service 28 copies the last confirmed text-input string (`host+0x54`) to a VM
 word address. Services 25 and 28 share `FUN_00056b78`: high byte first, through
 the first NUL, including a zero terminator. An odd total byte count is padded
@@ -419,6 +421,22 @@ with another zero; bytes after the written words remain untouched. Empty text
 writes a zero word. The runtime validates the entire writable extent before
 changing memory and preserves signed word representation. Destination capacity
 inside a valid VM region remains caller-managed, as in the original.
+
+## Name entry (services 17 and 40)
+
+These services retain their argument frame while displaying the substituted
+title, prompt, and default. A confirmed name goes to dynamic string slot 0
+and host last-input; callback `000d3f5c` returns `0x7ff5` without changing a
+numeric result cell. Typing accepts at most 16 ASCII letters/digits and
+lowercases uppercase letters after the first. Before appending, the existing
+name's width plus cursor width must be less than 240 logical pixels, measured
+with the supplied bitmap fonts. Empty Return never completes the call.
+
+The same limits apply to programmatic confirmation, without recasing the
+complete supplied value. Rejected values leave host and VM state unchanged.
+Desktop drafts survive save/load as explicitly validated strings; alerts and
+cursor state are transient. See [NAME_INPUT.md](NAME_INPUT.md) for the native
+layout, keyboard, alert, callback, and verification details.
 
 ## Randomness and numeric bits (services 27, 50, 51)
 
@@ -692,7 +710,7 @@ not write VM results or advance clocks. Pausing/focus loss stops active time.
 ## Loading overlay (service 91)
 
 ```text
-service 91(wait: s16) -> R = 0
+service 91([wait: s16, ...]) -> R = 0
 ```
 
 This is a timed application overlay, not a choice, download request, or arbitrary
@@ -700,9 +718,22 @@ acknowledgement. `FUN_0009fe3c` sets application `+0x6ac36` and opens the overla
 through `FUN_0008d43c`, using string bank 13 entries 31 and 35 ("Loading" and
 "Please wait..."). It always sets host `+0x118`, which gates further VM execution.
 
-| Argument | At dispatch | At overlay completion |
+The dispatcher reads `stack[SP - argc]` without checking the argument count.
+For a nonempty frame this is its first argument; for a zero-word frame it is
+the retained stack cell at SP. There is no implicit zero or supplied argument
+in the latter case. Uninitialized backing remains an explicit runtime error.
+Other supplied words are ignored by this service, but completion removes the
+entire encoded frame.
+
+The APK's `The_New_Girl.exp` calls service 91 with **zero arguments** in scene
+25004 at PC 60. On the verified route, retained backing contains 407, so the
+call waits with its empty frame intact. The imported `SHS_The_New_Girl.exp`
+passes 1 at PC 61 instead. Both continue to the original word-grid game after
+the overlay closes, including after saving and restoring during loading.
+
+| Wait value | At dispatch | At overlay completion |
 | --- | --- | --- |
-| `wait == 0` | Pop the one-word argument frame and set R=0 immediately | Release the host execution gate; do not pop again |
+| `wait == 0` | Pop the supplied argument frame (possibly empty) and set R=0 immediately | Release the host execution gate; do not pop again |
 | `wait != 0`, including negative values | Retain the VM yield and its argument frame; set host `+0x84` | Pop the frame, set R=0, clear host wait/pause flags |
 
 Neither branch writes UI result cell 0, changes relationship values, consumes
@@ -750,15 +781,20 @@ dialogue/widget objects across application overlays remains a fidelity detail.
 | Field | Contract |
 | --- | --- |
 | `engine.loading` | Null or `{blocking:bool, elapsed_ms:int[0..3000]}` |
-| Pending loading screen | `{name:"loading", details:{}}` |
-| Loading `vm.pending` | Retained service-91 yield for nonzero argument; null for argument zero |
+| Pending loading screen | `{name:"loading", details:{}}`; completed register-count calls with argc other than 1 retain `details.argument_count` |
+| Loading `vm.pending` | Retained service-91 yield for a nonzero wait value, including an empty frame; null for wait value zero |
 | Dialogue `details.relationship` | Null or the `RelationshipChange` fields in [UI_FIDELITY.md](UI_FIDELITY.md#npc-relationship-indicators) |
 | `engine.dialogue_animation.relationship` | Null or `{change:RelationshipChange, delay_ms:int[0..850], elapsed_ms:int[0..duration]}` |
 
-For service 91(0), loading a save validates the completed instruction immediately
-before the PC, R=0, and the popped zero argument still present in stack backing.
+For a zero wait value, loading a save validates the completed instruction
+immediately before the PC, R=0, and the zero word still present at SP in stack backing.
 It reconstructs the screen's request description without creating another VM
-yield. Both compact and register-count yield opcodes are supported. Timers,
+yield. Compact bytecode provides the original argument count. A completed
+register-count call preserves non-one counts in `details.argument_count`;
+absent metadata retains the legacy one-argument save contract. Arguments are
+recovered from backing without inventing a word for an empty frame. A waiting
+zero-argument save validates its wait flag against the retained cell at SP.
+Both compact and register-count yield opcodes are supported. Timers,
 pending-screen identity, native arguments and relationship cache correspondence
 are checked before accepting the save.
 

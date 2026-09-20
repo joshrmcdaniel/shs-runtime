@@ -108,7 +108,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(session.tick(250).name, 'choice')
         restored = Session.from_snapshot(resources, session.snapshot())
         self.assertEqual(restored.remaining_ms, 750)
-        self.assertEqual(restored.tick(750).details['text'], 'Went right.')
+        self.assertEqual(restored.tick(750).name, 'choice')
+        self.assertEqual(restored.remaining_ms, 0)
+        restored = Session.from_snapshot(resources, restored.snapshot())
+        self.assertEqual(restored.tick(0).name, 'choice')
+        self.assertEqual(restored.tick(1).details['text'], 'Went right.')
         words, (title, prompt, left, right) = text_words('Pick', 'A question', 'No', 'Yes')
         p = program(*host_call(2, title, prompt, 1000, 0, -1, 0),
                     *host_call(3, left, 77, 0), *host_call(3, right, -999, 1),
@@ -122,19 +126,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(session.snapshot(), saved)
         self.assertEqual(session.answer(1).request.args, (1,))
         other = Session.from_snapshot(resources, saved)
-        self.assertEqual(other.tick(1000).request.args, (77,))
+        self.assertEqual(other.tick(1001).request.args, (77,))
 
     def test_text_callback_dynamic_slot_and_pending_draft_survive_save(self):
         words, (title, prompt, default) = text_words('Name', 'Who are you?', 'Alex')
         resources = Resources(program(*host_call(17, title, prompt, default), 0x21,
                                       (0x1f, 0xfe01), words=words))
         session = Session(resources)
-        session.advance().details['draft'] = 'Zoé'
+        session.advance().details['draft'] = 'Zoe'
         session = Session.from_snapshot(resources, json.loads(json.dumps(session.snapshot())))
-        self.assertEqual(session.pending.details['draft'], 'Zoé')
-        self.assertEqual(session.answer('Zoé').request.args, (0x7ff5,))
-        self.assertEqual(session.engine.dynamic_strings[0], 'Zoé')
-        self.assertEqual(session.engine.last_input, 'Zoé')
+        self.assertEqual(session.pending.details['draft'], 'Zoe')
+        self.assertEqual(session.answer('Zoe').request.args, (0x7ff5,))
+        self.assertEqual(session.engine.dynamic_strings[0], 'Zoe')
+        self.assertEqual(session.engine.last_input, 'Zoe')
 
     def test_unsupported_service_cannot_be_acknowledged_or_autoplayed(self):
         session = Session(Resources(program(*host_call(254, 12, 34), 0x33)))

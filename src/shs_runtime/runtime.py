@@ -15,6 +15,8 @@ from .dialogue_notice import notice_lifetime
 from .relationships import RelationshipAnimation, RelationshipChange
 from .speaker_names import SpeakerNames
 from .title_screen import TitleScreen
+from .loading import loading_waits
+from .text_input import CURSOR_FONT, NAME_FONT, validate_name
 from .minigames import NativeRandom, RAND48_INITIAL, RAND48_MASK
 from .vm import KiwiVM, StopKind, VMError, VMStop, signed16
 
@@ -118,6 +120,13 @@ class Session:
         return self.resources.dialogue_layout().page(action.details, action.details.get('page_start', 0),
                                                     names=self.engine.speaker_names)
 
+    def name_input_metrics(self):
+        """Use the same APK glyph advances for interactive and headless input."""
+        if not hasattr(self.resources, 'dialogue_layout'):
+            return dict(font=None, cursor_width=0)
+        layout = self.resources.dialogue_layout()
+        return dict(font=layout.font(NAME_FONT), cursor_width=layout.font(CURSOR_FONT).glyph('|').advance)
+
     def _prepare_dialogue(self, *, new_name=False):
         details = self.pending.details
         if new_name and hasattr(self.resources, 'dialogue_layout'):
@@ -218,12 +227,7 @@ class Session:
             self._game_sound(game, before)
             return action
         elif action.name == 'text_input':
-            if not isinstance(value, str) or len(value) > 20 or '\x00' in value:
-                raise ValueError('Input must contain at most 20 characters and no NUL')
-            try:
-                value.encode('latin-1')
-            except UnicodeEncodeError:
-                raise ValueError('This game supports Latin-1 input characters') from None
+            validate_name(value, **self.name_input_metrics())
             self.engine.dynamic_strings[0] = self.engine.last_input = value
             self.vm.resume(0x7ff5)  # FUN_000d3f5c
             self.pending = None
@@ -346,8 +350,9 @@ class Session:
                 return self.advance()
             return self.pending
         if self.remaining_ms is not None:
-            self.remaining_ms = max(0, self.remaining_ms - elapsed_ms)
-            if self.remaining_ms == 0:
+            remaining = self.remaining_ms - elapsed_ms
+            self.remaining_ms = max(0, remaining)
+            if remaining < 0:  # 000ae4f4: exactly zero remains selectable.
                 # For incremental choices the native callback maps the timeout
                 # selection through the per-option return-value table as well.
                 details = self.pending.details
@@ -471,8 +476,10 @@ class Session:
             if pending is not None:
                 request = session.vm.pending
                 name, details = pending['name'], pending['details']
+                if not isinstance(details, dict):
+                    raise SaveError('Invalid pending screen details')
                 if name == 'loading' and engine.loading and not engine.loading.blocking:
-                    # Service 91(0) has already popped its argument. The host
+                    # A nonwaiting service 91 has already popped its frame. The host
                     # gate pauses before the very next instruction, so the
                     # completed call is recoverable from the program and stack
                     # backing without inventing a suspended VM frame.
@@ -480,13 +487,20 @@ class Session:
                     if request is not None or not 0 <= pc < len(session.vm.program.instructions):
                         raise SaveError('Invalid completed loading call')
                     instruction = session.vm.program.instructions[pc]
-                    if (not ((instruction.opcode == 0x1f and instruction.operand == 0x5b01)
+                    if (not ((instruction.opcode == 0x1f and instruction.operand >> 8 == 91)
                              or (instruction.opcode == 0x1e and instruction.operand == 91))
                             or session.vm.result != 0
                             or session.vm.read_word(session.vm.stack_base + session.vm.sp) != 0):
                         raise SaveError('Loading gate does not match the completed VM call')
-                    request = VMStop(StopKind.YIELD, pc, instruction.byte_offset, 91, (0,))
-                if request is None or not isinstance(details, dict):
+                    # Older register-count saves could only contain one argument.
+                    count = (instruction.operand & 255 if instruction.opcode == 0x1f
+                             else details.get('argument_count', 1))
+                    address = session.vm.stack_base + session.vm.sp
+                    if type(count) is not int or not 0 <= count <= 0x7ff5 - address:
+                        raise SaveError('Invalid completed loading argument count')
+                    args = tuple(session.vm.read_word(address + i) for i in range(count))
+                    request = VMStop(StopKind.YIELD, pc, instruction.byte_offset, 91, args)
+                if request is None:
                     raise SaveError('Pending screen has no suspended VM request')
                 expected_kind = {'finished': StopKind.HALT, 'vm_pause': StopKind.PAUSE}.get(name, StopKind.YIELD)
                 if request.kind != expected_kind:
@@ -505,8 +519,12 @@ class Session:
                     if state['version'] < 12 or details or engine != closed:
                         raise SaveError('Episode exit does not match its cleared scene')
                 elif name == 'loading':
-                    if (engine.loading is None or len(request.args) != 1 or details
-                            or engine.loading.blocking != bool(request.args[0])):
+                    expected_details = {}
+                    if (engine.loading and not engine.loading.blocking and len(request.args) != 1
+                            and session.vm.program.instructions[request.pc].opcode == 0x1e):
+                        expected_details['argument_count'] = len(request.args)
+                    if (engine.loading is None or details != expected_details
+                            or engine.loading.blocking != loading_waits(session.vm, request)):
                         raise SaveError('Loading screen does not match its VM arguments')
                 elif name == 'message_panel':
                     panel = engine.message_panel
@@ -583,6 +601,8 @@ class Session:
                 elif name == 'text_input':
                     for key in ('title', 'prompt', 'default'):
                         _typed_value(details[key], str)
+                    if 'draft' in details:
+                        _typed_value(details['draft'], str)
                 session.pending = EngineAction(name, request, False, deepcopy(details))
                 if name == 'dialogue':
                     saved_end = details.get('page_end')

@@ -1,16 +1,161 @@
 import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from shs_runtime.choice import ChoiceLayout
 from shs_runtime.content import ContentLibrary
+from shs_runtime.fonts import BitmapFont, Glyph, layout_text
 from shs_runtime.runtime import Session
-from test_runtime import answer_screen, host_call, text_words
+from shs_runtime.ui_assets import Layout, LayoutBank, LayoutNode
+from test_runtime import Resources, answer_screen, host_call, text_words
 from test_vm import program
+
+
+def timed_resources(service=1, timeout=2000, count=3):
+    labels = [f'Option {i}' for i in range(count)]
+    words, refs = text_words('Choose', 'A question.', '|'.join(labels), *labels)
+    if service == 1:
+        calls = host_call(1, refs[0], refs[2], refs[1], timeout, 1, -1, -1, 1)
+    else:
+        calls = host_call(2, refs[0], refs[1], timeout, 1, -1, 1)
+        for i, ref in enumerate(refs[3:]):
+            calls += host_call(3, ref, 100 + i, 1)
+        calls += host_call(4, 0)
+    return Resources(program(*calls, 0x21, (0x1f, 0xfe01), words=words))
+
+
+def authored_layout():
+    font = BitmapFont('Authored choice', 14, 16, 'unused.png',
+                      {c: Glyph(c, 0, 0, 3, 6, 0, 0, 7) for c in range(32, 127)}, {})
+    geometry = LayoutNode((0, 0, 256, 20), (0, 0, 0, 0), 6, ())
+    layouts = [Layout(280, 40, (geometry,) * 9) for _ in range(67)]
+    # Different dimensions and solid art exercise the timer without native assets.
+    clock = LayoutNode((130, 0, 150, 20), (0, 0, 0, 0), 17, (2, 9))
+    hidden_score = LayoutNode((175, 0, 205, 20), (0, 0, 0, 0), 23, (66,))
+    layouts[22] = Layout(280, 40, (geometry,) * 9 + (clock, geometry, geometry, hidden_score))
+    layouts[66] = Layout(30, 20, (LayoutNode((0, 0, 30, 20), (0, 0, 0, 0), 17, (2, 10)),))
+    layout = ChoiceLayout.__new__(ChoiceLayout)
+    layout.bank = LayoutBank(3, 0, 0, (), tuple(layouts))
+    layout.font = lambda _: font
+    return layout
+
+
+class ChoiceTimingTests(unittest.TestCase):
+    def test_both_choice_forms_expire_after_zero_and_keep_their_result_mapping(self):
+        for service, result in ((1, 1), (2, 101)):
+            with self.subTest(service=service):
+                r = timed_resources(service); s = Session(r); s.advance()
+                s.engine.result_cells[0] = 42
+                held = s.vm.snapshot()
+                s.tick(2000)
+                self.assertEqual(s.remaining_ms, 0)
+                self.assertEqual(s.vm.snapshot(), held)
+                self.assertEqual(s.engine.result_cells[0], 42)
+                saved = json.loads(json.dumps(s.snapshot()))
+                restored = Session.from_snapshot(r, saved)
+                self.assertEqual(restored.tick(0).name, 'choice')
+                self.assertEqual(restored.tick(1).request.args, (result,))
+                self.assertEqual(restored.engine.result_cells[0], result)
+                # A click at exactly zero still wins before the next active tick.
+                self.assertEqual(s.answer(2).request.args, (2 if service == 1 else 102,))
+
+    def test_nonpositive_durations_have_no_timer_and_do_not_expire(self):
+        for service in (1, 2):
+            for timeout in (-1, 0):
+                s = Session(timed_resources(service, timeout)); s.advance()
+                before = s.snapshot()
+                s.tick(100000)
+                self.assertIsNone(s.remaining_ms)
+                self.assertEqual(s.snapshot(), before)
+                self.assertIsNone(authored_layout().page(s.pending.details).timer_panel)
+
+    def test_timer_has_room_below_rows_and_stays_visible_above_scrolling_choices(self):
+        layout = authored_layout()
+        for count in (2, 3, 9):
+            s = Session(timed_resources(count=count)); s.advance()
+            page = layout.page(s.pending.details)
+            self.assertLessEqual(page.timer_panel.y + page.timer_panel.height, 421)
+            last = page.rows[-1].rect
+            self.assertEqual(last.y + last.height - page.max_scroll, page.timer_panel.y)
+            plain = layout.page(dict(s.pending.details, timeout_ms=0))
+            self.assertEqual(page.box.height - plain.box.height, 20)
+            self.assertIsNone(plain.timer_panel)
+
+
+@unittest.skipUnless(importlib.util.find_spec('pygame'), 'desktop extra is not installed')
+class ChoiceTimerRenderTests(unittest.TestCase):
+    def setUp(self):
+        os.environ['SDL_VIDEODRIVER'] = os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        import pygame
+        pygame.display.init(); pygame.display.set_mode((320, 480))
+        self.addCleanup(pygame.quit)
+
+    def renderer(self):
+        import pygame
+        from shs_runtime.desktop_choice import ChoiceRenderer
+        layout = authored_layout()
+        def frame(asset, index):
+            surface = pygame.Surface((20, 20), pygame.SRCALPHA)
+            surface.fill({708: (0, 200, 0), 709: (200, 0, 0)}.get(asset, (80, 80, 80)))
+            if asset not in (708, 709) and index == 10:
+                self.fail('Ordinary choices must hide the score capsule')
+            return surface
+        art = SimpleNamespace(frame=frame, image=lambda _: None,
+                              box=lambda *args, **kwargs: None)
+        text = SimpleNamespace(layout=lambda name, value, width, style:
+                               layout_text(layout.font(name), value, width, style),
+                               draw_layout=lambda *args: None)
+        renderer = ChoiceRenderer(None, text, art)
+        renderer.layout = layout
+        return renderer
+
+    def test_clock_sweep_restores_from_saved_time_and_rendering_does_not_advance_vm(self):
+        import pygame
+        for service in (1, 2):
+            with self.subTest(service=service):
+                r = timed_resources(service); s = Session(r); s.advance()
+                renderer = self.renderer()
+                target = pygame.Surface((320, 480))
+                before = s.snapshot()
+                page, _ = renderer.draw(target, s)
+                self.assertEqual(s.snapshot(), before)
+                clock = renderer.layout.bank.rectangle(22, 10, page.timer_panel)
+                right, left = (clock.x + 15, clock.y + 5), (clock.x + 5, clock.y + 5)
+                self.assertEqual(target.get_at(right)[:3], (0, 200, 0))
+                s.tick(1000)
+                renderer.draw(target, s)
+                self.assertEqual(target.get_at(right)[:3], (200, 0, 0))
+                self.assertEqual(target.get_at(left)[:3], (0, 200, 0))
+                pixels = pygame.image.tobytes(target, 'RGB')
+                restored = Session.from_snapshot(r, json.loads(json.dumps(s.snapshot())))
+                renderer.draw(target, restored)
+                self.assertEqual(pygame.image.tobytes(target, 'RGB'), pixels)
+                self.assertEqual(restored.vm.snapshot(), before['vm'])
+                restored.tick(1000)
+                renderer.draw(target, restored)
+                self.assertEqual(target.get_at(left)[:3], (200, 0, 0))
+                self.assertEqual(restored.pending.name, 'choice')
+
+    def test_scroll_keeps_timer_fixed_and_out_of_option_hit_rectangles(self):
+        import pygame
+        s = Session(timed_resources(count=9)); s.advance(); s.tick(1000)
+        renderer = self.renderer(); target = pygame.Surface((320, 480))
+        page, buttons = renderer.draw(target, s)
+        panel = pygame.Rect(page.timer_panel.x, page.timer_panel.y,
+                            page.timer_panel.width, page.timer_panel.height)
+        pixels = pygame.image.tobytes(target.subsurface(panel), 'RGB')
+        for scroll in (0, page.max_scroll // 2, page.max_scroll):
+            _, buttons = renderer.draw(target, s, scroll=scroll)
+            self.assertEqual(pygame.image.tobytes(target.subsurface(panel), 'RGB'), pixels)
+            self.assertTrue(all(not rect.colliderect(panel) for rect, _ in buttons))
+        self.assertIn(('choose', 8), [command for _, command in buttons])
+        self.assertEqual(s.pending.name, 'choice')
 
 
 @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user library is not present')
@@ -116,6 +261,13 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(before, ui.session.snapshot())
         ui.tick(250)
         self.assertEqual(ui.session.remaining_ms, 750)
+        ui.render()
+        timed = pygame.image.tobytes(ui.canvas, 'RGB')
+        ui.handle_event(pygame.event.Event(pygame.WINDOWFOCUSLOST)); ui.tick(5000)
+        ui.handle_event(pygame.event.Event(pygame.WINDOWFOCUSGAINED)); ui.render()
+        self.assertEqual(ui.session.remaining_ms, 750)
+        self.assertEqual(pygame.image.tobytes(ui.canvas, 'RGB'), timed)
+        self.assertIsNotNone(ui.choice_renderer.page(ui.session).timer_panel)
 
         ui.window = pygame.display.set_mode((800, 600), pygame.RESIZABLE)
         ui.render()

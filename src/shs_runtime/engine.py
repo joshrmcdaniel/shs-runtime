@@ -12,7 +12,7 @@ from .word_grid import WordGrid, read_grid
 from .football import Football, read_football
 from .character_picker import CharacterPicker
 from .scene_badge import SceneBadge
-from .loading import LoadingScreen
+from .loading import LoadingScreen, loading_waits
 from .message_panel import MessagePanel
 from .speaker_names import SpeakerNames
 from .title_screen import TitleScreen
@@ -274,11 +274,15 @@ class EngineState:
             self.close_episode()
             return EngineAction('episode_exit', request, False)
         if y == 91:
-            need(1)
-            self.loading = LoadingScreen(bool(args[0]), self.loading.elapsed_ms if self.loading else 0)
+            self.loading = LoadingScreen(loading_waits(vm, request), self.loading.elapsed_ms if self.loading else 0)
+            details = {}
             if not self.loading.blocking:
+                # Compact calls retain their count in bytecode. Register-count
+                # calls lose it on completion; keep nonlegacy counts for saves.
+                if vm.program.instructions[request.pc].opcode == 0x1e and len(args) != 1:
+                    details['argument_count'] = len(args)
                 vm.resume(0)  # The call completes, but host +0x118 still gates execution.
-            return EngineAction('loading', request, False)
+            return EngineAction('loading', request, False, details)
         if y == 70:
             at_least(1)
             selector = args[0]

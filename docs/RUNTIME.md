@@ -145,7 +145,7 @@ saves are not supported.
 | Click a football target or press 1–9 | Commit that play; targets change over time |
 | Tap football help / Enter / Space | Continue after its native reading delay |
 | Gear on title, dialogue, choice or mini-game screens | Open Resume/Save/Load/Main Menu; active game time and music pause |
-| Type, Backspace, Enter | Edit and submit a text input |
+| Type, Backspace, Enter | Edit a name (up to 16 ASCII letters/digits, subject to native font width); Enter submits a nonempty name or dismisses its alert |
 | Save button / F5 | Replace the current episode's local save slot |
 | Load button / F9 | Restore that slot |
 | Wheel, arrow keys, Page Up/Down | Scroll long option lists and other non-dialogue screens |
@@ -276,7 +276,7 @@ or original executable code is used. JSON fields are:
 | `vm` | Full mutable machine state, defined below |
 | `engine` | All current `EngineState` dataclass fields, including panel, speaker font history, dialogue/title animation, choice builder, random streams and any active mini game |
 | `pending` | Null, or `{name, details}` for the suspended screen/service or terminal episode exit |
-| `remaining_ms` | Null for no timer; otherwise the remaining active choice time in milliseconds |
+| `remaining_ms` | Null for no timer; otherwise the remaining active choice time in milliseconds. Zero is still pending; the next positive active tick expires it. The visible circular timer derives from this value. |
 | `scene_loads` | Nonnegative number of scheduled script loads |
 
 The `vm` object contains `pc`, `sp`, `fp`, `a`, `b`, `result`, `data`, `stack`,
@@ -290,8 +290,12 @@ The `vm` object contains `pc`, `sp`, `fp`, `a`, `b`, `result`, `data`, `stack`,
 - `vm.pending` is null or `{kind, pc, byte_offset, yield_id, args}`. Its PC is the
   issuing instruction; `vm.pc` is already advanced for a yield or pause and
   remains on the HALT instruction for a halt. Pending argument words remain
-  in the stack until the callback completes. Service 91(0) is an application
-  gate after an already completed call: its loading screen has `vm.pending=null`.
+  in the stack until the callback completes. Service 91 with a zero wait value
+  is an application gate after an already completed call: its loading screen
+  has `vm.pending=null`. Empty service-91 frames read their wait flag from
+  retained backing at SP; they do not default to zero. Completed compact calls
+  recover argc from bytecode; register-count calls with argc other than 1
+  preserve it in the pending loading screen's `details.argument_count`.
   Services 7/63 instead retain their final yield as a terminal audit record;
   no callback or subsequent instruction is permitted.
 - `opcode_counts` and numeric engine map keys use decimal strings as JSON
@@ -300,7 +304,9 @@ The `vm` object contains `pc`, `sp`, `fp`, `a`, `b`, `result`, `data`, `stack`,
   bytes, all 11 dynamic string slots, 10 optional result words, UI defaults,
   scheduled `(script_id, flag)` records, panel presentation, audio requests,
   last input, and any choice under construction. A text-input draft is retained
-  in its pending screen details when saving from the desktop.
+  in its pending screen details when saving from the desktop and validated as
+  a string on load. It becomes script-visible only after valid confirmation;
+  input alerts, keyboard visibility, and cursor phase are not serialized.
 
 The panel additionally stores `presentation_mode` (native modes 1–4, or 0
 before setup), `theme`, and `emphasis_theme` (last ordinary theme-1/2 backtick
@@ -478,7 +484,10 @@ Continuing reaches **service 71 at PC 92**, still in scene 25002. This timed
 word game is now playable, and scores 0 and 10 produce different actual script
 branches. Service 88's post-game notification now continues into dialogue.
 An all-first-choice route with ten positive word selections reaches service 91
-at PC 60 in scene 25004; its loading gate is now implemented. Separate local tests
+at PC 60 in scene 25004. This APK-bundled call has zero arguments and reads a
+retained wait value of 407. The imported `SHS_The_New_Girl.exp` passes 1 at PC 61.
+Both loading gates preserve the original frame and timer across saves and
+continue into the word-grid game. Separate local tests
 exercise the original driving-grid frame in script 25003 and the football
 frame in **Big Man On Campus** without adding production script skips.
 
@@ -535,8 +544,9 @@ iOS/Android differences. Dialogue uses the original fonts, layout bank, box
 artwork, masked portrait placement and paging. Narration hides the configured
 character's name and portrait; thought prefixes add parentheses. Ordinary
 choices use the supplied screenshot layout and APK artwork. Episode/week title
-screens now use their original glyph fonts, layout and entrance animations;
-text-input screens retain prototype fonts/layouts. Dialogue portraits scale in/out and
+screens now use their original glyph fonts, layout and entrance animations.
+Name-entry screens use native APK layouts, bitmap fonts, and error artwork,
+with SDL keyboard input. Dialogue portraits scale in/out and
 names fade while text reveals; dialogue backgrounds remain static, with basic music/SFX
 playback. NPC relationship icons now use original assets, cache writes, sounds,
 gains/losses and dialogue delays. Name layout includes the native exceptions
@@ -545,8 +555,10 @@ remaining overlaps. Cross-object kerning, other widgets' shared font effects,
 scene transitions and native global input locks remain incomplete; see
 [UI_FIDELITY.md](UI_FIDELITY.md). Native panel lifecycle and Android promotional
 branches, music repeat/fades, and all channel behavior are not fully reproduced.
-Text entry currently accepts up to 20 Latin-1 characters; that limit is a
-prototype constraint, not a fully recovered input-widget specification.
+Name entry accepts up to 16 ASCII alphanumeric characters, with the recovered
+pre-append bitmap-width gate and interactive case conversion. See
+[NAME_INPUT.md](NAME_INPUT.md) for keyboard controls and remaining fidelity
+limits, including the mobile system keyboard and inherited UI state.
 
 The exploratory Ren'Py exporter remains in the original research checkout
 and is not included in this standalone runtime.

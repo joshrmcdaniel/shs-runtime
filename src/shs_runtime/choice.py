@@ -38,6 +38,7 @@ class ChoicePage:
     rows: tuple[ChoiceRow, ...]
     theme: int
     max_scroll: int
+    timer_panel: Rect | None = None
 
 
 class ChoiceLayout:
@@ -51,6 +52,7 @@ class ChoiceLayout:
 
     def page(self, details, *, theme=1, has_portrait=False):
         minigame = details.get('minigame', False)
+        timed = not minigame and details.get('timeout_ms', 0) > 0
         width = self.bank.layouts[65].width
         header = self.bank.rectangle(7 if has_portrait else 8, 9)
         title_font = TITLE_FONTS.get(theme, 'PajamaHipY26')
@@ -89,7 +91,8 @@ class ChoiceLayout:
             _, top, _, bottom = text.ink_bounds
             laid_out.append((text, max(37 if minigame else 44, math.ceil(bottom - top + 16)), enabled))
 
-        height = header_height + sum(h for _, h, _ in laid_out) + (80 if minigame else 20)
+        footer_height = self.bank.layouts[22].height if timed else (80 if minigame else 20)
+        height = header_height + sum(h for _, h, _ in laid_out) + footer_height
         # The reference's panel is centered below its overlapping heading.
         # Taller lists can scroll without changing the script's option order.
         box = Rect((320 - width) // 2, max(32, (480 - height) // 2 + (0 if minigame else 11)), width, height)
@@ -101,6 +104,13 @@ class ChoiceLayout:
             rows.append(ChoiceRow(index, rect, text, origin, enabled))
             y += height
         portrait = Rect(box.x - 27, box.y - 24, 128, 128) if has_portrait else None
+        timer_panel = None
+        max_scroll = max(0, box.y + box.height - 421)
+        if timed:
+            # Layout 22 supplies the timer's lower panel. Keep it visible when
+            # the desktop's expanded rows need scrolling above the footer.
+            timer_panel = Rect(box.x, min(y, 421 - footer_height), width, footer_height)
+            max_scroll = max(0, y - timer_panel.y)
         return ChoicePage(box, title_font, title, (box.x + header.x, box.y - 9),
                           description, (box.x + 7, box.y + description_y), portrait,
-                          tuple(rows), theme, max(0, box.y + box.height - 421))
+                          tuple(rows), theme, max_scroll, timer_panel)

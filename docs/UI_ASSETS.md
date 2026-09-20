@@ -233,6 +233,20 @@ respectively. Width and row stride stay unchanged: the final 12 rows are
 omitted from the texture, and the portrait sprite uses the reduced height.
 This crop is a runtime operation, not an on-disk PNG or image-pack header field.
 
+Imported `SHS_The_New_Girl.exp` includes 256 × 256 and 226 × 256 indexed PNG
+portraits, larger than the Android mask. The EXP metadata has no density field,
+and the available Android PNG loader does not rescale them. The desktop renderer
+therefore applies an explicit compatibility conversion before masking: an
+oversized RGBA portrait with even dimensions that fits within twice the mask's
+dimensions is reduced by two on both axes. Pillow's BOX resampling uses
+premultiplied alpha, preserving aspect ratio without mixing hidden RGB into
+visible edges. These variants become 128 × 128 and 113 × 128, respectively.
+Native-size portraits remain byte-for-byte unchanged; other oversized images
+still fail explicitly with their dimensions and modes. Normalization does not
+modify imported resources. The 2× scale and resampling filter are compatibility
+inferences, not verified behavior from an original release supporting these
+larger variants. The native mask alignment and binary rule then apply normally.
+
 ## Sprite atlases and glyph fonts
 
 The main menu additionally uses the resource-13 offset string bank and
