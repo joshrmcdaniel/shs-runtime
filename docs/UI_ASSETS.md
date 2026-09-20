@@ -232,6 +232,12 @@ height before calling `FUN_001755f0` to upload its texture. The image accessors
 respectively. Width and row stride stay unchanged: the final 12 rows are
 omitted from the texture, and the portrait sprite uses the reduced height.
 This crop is a runtime operation, not an on-disk PNG or image-pack header field.
+`DialogueRenderer.portrait()` performs it after masking and before horizontal
+flipping, returning the same cropped texture to dialogue, choices and the
+appearance picker. Consumers position its center using the separately halved
+texture and frame heights (see [UI_FIDELITY.md](UI_FIDELITY.md#box-portrait-and-text-placement));
+they must not crop it a second time or trim additional transparent rows.
+Source resources remain unchanged.
 
 Imported `SHS_The_New_Girl.exp` includes 256 × 256 and 226 × 256 indexed PNG
 portraits, larger than the Android mask. The EXP metadata has no density field,
@@ -241,11 +247,13 @@ oversized RGBA portrait with even dimensions that fits within twice the mask's
 dimensions is reduced by two on both axes. Pillow's BOX resampling uses
 premultiplied alpha, preserving aspect ratio without mixing hidden RGB into
 visible edges. These variants become 128 × 128 and 113 × 128, respectively.
-Native-size portraits remain byte-for-byte unchanged; other oversized images
-still fail explicitly with their dimensions and modes. Normalization does not
-modify imported resources. The 2× scale and resampling filter are compatibility
-inferences, not verified behavior from an original release supporting these
-larger variants. The native mask alignment and binary rule then apply normally.
+The subsequent native 12-row crop yields 128 × 116 and 113 × 116 textures.
+Normalization leaves native-size portraits byte-for-byte unchanged; other
+oversized images still fail explicitly with their dimensions and modes.
+Normalization does not modify imported resources. The 2× scale and resampling
+filter are compatibility inferences, not verified behavior from an original
+release supporting these larger variants. The native mask alignment and binary
+rule then apply normally.
 
 ## Sprite atlases and glyph fonts
 

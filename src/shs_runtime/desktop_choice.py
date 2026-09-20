@@ -121,12 +121,7 @@ class ChoiceRenderer:
             # FUN_000ae5d4 requests expression zero, independently of dialogue.
             image = self.art.portrait(asset, details['portrait_mode'] == 2 and page.theme != 3)
             if image is not None:
-                # FUN_0005afbc removes the final 12 rows after masking.
-                height = image.get_height() - 12
-                if height > 0:
-                    image = image.subsurface((0, 0, image.get_width(), height))
-                bottom = cy + self.art.frame(126, 39).get_height() // 2
-                self.canvas.blit(image, (cx - image.get_width() // 2, bottom - image.get_height()))
+                self.canvas.blit(image, self.art.portrait_rect(image, (cx, cy)))
         self.text.draw_layout(self.canvas, page.title_font, page.title,
                               page.title_origin[0], page.title_origin[1] - scroll)
         self.text.draw_layout(self.canvas, BODY_FONT, page.description,

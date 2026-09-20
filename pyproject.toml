@@ -20,7 +20,7 @@ classifiers = [
 
 [project.optional-dependencies]
 desktop = ["pygame-ce>=2.5.7,<3"]
-build = ["pygame-ce>=2.5.7,<3", "pyinstaller>=6.16,<7"]
+build = ["pygame-ce>=2.5.7,<3", "pyinstaller>=6.16,<7", "buildozer>=1.6.0,<2"]
 
 [project.scripts]
 shs-tool = "shs_runtime.cli:main"

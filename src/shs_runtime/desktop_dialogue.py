@@ -5,7 +5,7 @@ import pygame
 
 from .content import ContentError
 from .dialogue_notice import NOTICE_FONT, NOTICE_STYLE, NoticeMotion
-from .ui_assets import ImagePack, Raster
+from .ui_assets import ImagePack, Raster, UIAssetError
 
 
 class DialogueRenderer:
@@ -29,17 +29,33 @@ class DialogueRenderer:
 
     @lru_cache(maxsize=32)
     def portrait(self, asset_id, flipped):
+        """Native portrait texture: normalize, mask, remove 12 rows, then flip."""
         image = self.image(asset_id)
         if image is None:
             return None
         raster = Raster(*image.get_size(), pygame.image.tobytes(image, 'RGBA'))
         mask = self.pack(268).images[0]
         masked = raster.normalize_portrait(mask).portrait_mask(mask)
+        # FUN_0005afbc shortens the masked texture before FUN_0009c034
+        # aligns its bottom to the circle. Keeping the discarded rows lifts
+        # the visible character by 12 pixels inside its frame.
+        height = masked.height - 12
+        if height <= 0:
+            raise UIAssetError(f'Portrait height {masked.height} cannot accommodate the native 12-row crop')
+        pixels = masked.pixels[:masked.width * height * 4]
         # Match the display format after creating the masked RGBA buffer.
         # Cocoa's opaque BGRA canvas can otherwise copy transparent RGB
         # instead of blending it, exposing white pixels and black mask corners.
-        image = pygame.image.frombytes(masked.pixels, (masked.width, masked.height), 'RGBA').convert_alpha()
+        image = pygame.image.frombytes(pixels, (masked.width, height), 'RGBA').convert_alpha()
         return pygame.transform.flip(image, flipped, False) if flipped else image
+
+    def portrait_rect(self, image, center=(0, 0)):
+        """FUN_0009c034 positions the sprite center within the bubble."""
+        x, y = center
+        offset = self.frame(126, 39).get_height() // 2 - image.get_height() // 2
+        # The native routine halves each height separately. A midbottom
+        # anchor puts odd-height artwork one pixel above this center.
+        return image.get_rect(center=(x, y + offset))
 
     def box(self, target, rect, theme, *, alpha=255):
         """FUN_00081920 places the eight border pieces outside the center."""
@@ -66,8 +82,7 @@ class DialogueRenderer:
         image = self.portrait(portrait.asset_id, portrait.mode == 2 and portrait.theme != 3)
         pieces = [(ring, ring.get_rect(center=(0, 0))) for ring in rings]
         if image is not None:
-            bottom = self.frame(126, 39).get_height() // 2
-            pieces.append((image, image.get_rect(midbottom=(0, bottom))))
+            pieces.append((image, self.portrait_rect(image)))
         bounds = pieces[0][1].unionall([rect for _, rect in pieces[1:]])
         layer = pygame.Surface(bounds.size, pygame.SRCALPHA).convert_alpha()
         for piece, rect in pieces:

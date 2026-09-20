@@ -22,8 +22,7 @@ class CharacterPickerRenderer:
         pieces = [(ring, ring.get_rect(center=(0, 0)))]
         image = self.art.portrait(asset, False)  # Expression zero, portrait mode 1.
         if image is not None:
-            image = image.subsurface((0, 0, image.get_width(), image.get_height() - 12))
-            pieces.append((image, image.get_rect(midbottom=(0, self.art.frame(126, 39).get_height() // 2))))
+            pieces.append((image, self.art.portrait_rect(image)))
         bounds = pieces[0][1].unionall([rect for _, rect in pieces[1:]])
         layer = pygame.Surface(bounds.size, pygame.SRCALPHA).convert_alpha()
         for piece, rect in pieces:

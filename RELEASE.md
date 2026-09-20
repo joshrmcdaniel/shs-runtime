@@ -1,7 +1,10 @@
-# Unreleased
+# v0.1.2
 
 ## Fixed
 
+- Corrected dialogue portraits sitting too high inside their circular frames.
+  The native 12-row crop and center placement now apply consistently in
+  dialogue, choices and the appearance picker, including odd-height artwork.
 - Fixed the imported New Girl episode's portrait-mask error. Larger portrait
   variants now render at half size before masking, preserving aspect ratio,
   transparency and orientation. Existing libraries need no content reimport.

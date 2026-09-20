@@ -141,9 +141,9 @@ class DesktopTests(unittest.TestCase):
         # colored pixel that the portrait mask turns into transparent black.
         pixels = bytes((255, 255, 255, 0, 0, 0, 0, 255,
                         50, 80, 110, 128, 90, 200, 15, 255))
-        source = pygame.image.frombytes(pixels, (4, 1), 'RGBA')
+        source = pygame.image.frombytes(pixels + b'\0' * (4 * 12 * 4), (4, 13), 'RGBA')
         renderer = DialogueRenderer(None, None, lambda _: source)
-        renderer.pack = lambda _: SimpleNamespace(images=(Raster(4, 1, b'\0\0\0\xff', 'A'),))
+        renderer.pack = lambda _: SimpleNamespace(images=(Raster(4, 13, b'\0\0\0\xff' + b'\0' * 48, 'A'),))
         expected = [(120, 150, 180), (0, 0, 0), (85, 115, 145), (120, 150, 180)]
         for alpha_mask in (0, 0xff000000):
             for flipped in (False, True):
@@ -167,10 +167,11 @@ class DesktopTests(unittest.TestCase):
         pygame.display.init(); pygame.display.set_mode((8, 2))
         pixels = bytes((20, 40, 60, 255, 80, 100, 120, 255,
                         140, 160, 180, 255, 200, 220, 240, 255))
-        source = pygame.transform.scale(pygame.image.frombytes(pixels, (4, 1), 'RGBA'), (8, 2))
+        logical = pygame.image.frombytes(pixels + b'\0' * (4 * 12 * 4), (4, 13), 'RGBA')
+        source = pygame.transform.scale(logical, (8, 26))
         before = pygame.image.tobytes(source, 'RGBA')
         renderer = DialogueRenderer(None, None, lambda _: source)
-        renderer.pack = lambda _: SimpleNamespace(images=(Raster(4, 3, b'\xff' * 8 + b'\0\0\1\0', 'A'),))
+        renderer.pack = lambda _: SimpleNamespace(images=(Raster(4, 15, b'\xff' * 8 + b'\0\0\1\0' + b'\xff' * 48, 'A'),))
         expected = [pixels[i:i + 4] for i in range(0, 16, 4)]
         expected[2] = b'\0' * 4
         for flipped in (False, True):
@@ -179,7 +180,47 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(pygame.image.tobytes(image, 'RGBA'),
                              b''.join(expected[::-1] if flipped else expected))
         self.assertEqual(pygame.image.tobytes(source, 'RGBA'), before)
-        self.assertEqual(source.get_size(), (8, 2))
+        self.assertEqual(source.get_size(), (8, 26))
+
+    def test_portrait_art_reaches_circle_bottom_after_native_crop(self):
+        os.environ['SDL_VIDEODRIVER'] = os.environ['SDL_AUDIODRIVER'] = 'dummy'
+        from shs_runtime.desktop_dialogue import DialogueRenderer
+        from shs_runtime.desktop_picker import CharacterPickerRenderer
+        from shs_runtime.dialogue_animation import DialoguePortrait
+        from shs_runtime.ui_assets import Raster
+        import pygame
+
+        self.addCleanup(pygame.quit)
+        pygame.display.init(); pygame.display.set_mode((20, 20))
+        for height in (8, 9):
+            source = pygame.Surface((6, height + 12), pygame.SRCALPHA)
+            source.fill((240, 0, 0, 255))
+            source.fill((0, 200, 0, 255), (0, 0, 3, height))
+            source.fill((0, 0, 200, 255), (3, 0, 3, height))
+            before = pygame.image.tobytes(source, 'RGBA')
+            art = DialogueRenderer(None, None, lambda _: source)
+            # Only the first portrait rows survive the mask. The trailing
+            # twelve must be removed before aligning to the circle.
+            mask = Raster(6, height + 14, b'\xff' * 12 + b'\0' * (6 * height) + b'\xff' * 72, 'A')
+            art.pack = lambda _: SimpleNamespace(images=(mask,))
+            art.frame = lambda *_: pygame.Surface((14, height + 2), pygame.SRCALPHA)
+            picker = CharacterPickerRenderer(None, None, art)
+            for theme in (1, 2, 3):
+                for mode in (1, 2):
+                    with self.subTest(height=height, theme=theme, mode=mode):
+                        portrait = DialoguePortrait(1, 1, mode, theme)
+                        layer, origin = art.portrait_group(portrait)
+                        self.assertEqual(origin, (-7, -5))
+                        # Both odd and even heights reach the ring's bottom
+                        # row, leaving two clear rows above the character.
+                        self.assertEqual(layer.get_bounding_rect(), pygame.Rect(4, 2, 6, height))
+                        flipped = mode == 2 and theme != 3
+                        self.assertEqual(tuple(layer.get_at((4, height + 1))),
+                                         (0, 0, 200, 255) if flipped else (0, 200, 0, 255))
+                layer, origin = picker.portrait(1, theme)
+                self.assertEqual(origin, (-7, -5))
+                self.assertEqual(layer.get_bounding_rect(), pygame.Rect(4, 2, 6, height))
+            self.assertEqual(pygame.image.tobytes(source, 'RGBA'), before)
 
     @unittest.skipUnless(Path('.shs-library/library.json').is_file(), 'user library is not present')
     def test_imported_new_girl_portraits_render_through_opening_and_save_restore(self):
@@ -217,8 +258,8 @@ class DesktopTests(unittest.TestCase):
                     answer_screen(ui.session)
             self.assertEqual(ui.session.pending.name, 'word_game')
             self.assertEqual(ui._image(26021).get_size(), (256, 256))
-            self.assertEqual(ui.dialogue_renderer.portrait(26021, True).get_size(), (128, 128))
-            self.assertEqual(ui.dialogue_renderer.portrait(26005, False).get_size(), (113, 128))
+            self.assertEqual(ui.dialogue_renderer.portrait(26021, True).get_size(), (128, 116))
+            self.assertEqual(ui.dialogue_renderer.portrait(26005, False).get_size(), (113, 116))
             saved = ui.session.snapshot()
             pixels = pygame.image.tobytes(ui.canvas, 'RGB')
             ui.session = Session.from_snapshot(resources, saved)

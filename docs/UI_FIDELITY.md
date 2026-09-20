@@ -407,13 +407,21 @@ frames `(6,7,8; 4,fill,5; 0,1,2)` around it. Corners retain their original
 dimensions; edges stretch along one axis. Measurement uses width 246, while
 the resulting text object has width **260**; keep that native distinction.
 
-`FUN_000aaa40` uses portrait node 48 or 78 and sets the widget center to
+`FUN_000aaa40` uses portrait node 48 or 78 and sets the whole widget center to
 `(rect.x + rect.w/2, 485 - rect.y - rect.h/2)` in GL coordinates. In the
 normal downward viewport, the resulting centers are `(57,284)` and `(263,284)`.
+`FUN_0009dd8c` gives the widget a 128 × 128 content size and puts its scaled
+portrait group at local `(0,0)`. The artwork and circle are children of that
+group; the layout rectangle is not a separate anchor for the character image.
 `FUN_0009bd40` supplies common frame 37 behind the portrait and frame 38, 39,
-or 40 as the theme-colored circle. `FUN_0009c034` aligns the art's bottom to
-`center_y + floor(common_frame_39.height/2)`, and flips it horizontally in
-mode 2 except for theme 3. The original 128 × 150 portrait mask is applied
+or 40 as the theme-colored circle. `FUN_0009c034` positions the character's
+center at screen Y
+`bubble_center_y + floor(common_frame_39.height/2) - floor(cropped_art.height/2)`.
+Both heights are halved separately; using a strict bottom-edge anchor instead
+placed odd-height artwork one pixel too high in pygame. The shared
+`portrait_rect()` now applies the native center calculation to dialogue,
+choices and the picker. Mode 2 flips the character except for theme 3.
+The original 128 × 150 portrait mask is applied
 before drawing; the portraits are no longer resized to an arbitrary 160 × 180
 desktop rectangle.
 
@@ -449,9 +457,23 @@ checks the translucent panel and its corners.
 
 The native image loader also subtracts 12 from the decoded portrait height
 after masking and before texture upload; `FUN_00139d70` confirms that the first
-image field is height. The dialogue renderer still retains those final rows,
-so matching that crop and its effect on bottom alignment remains a fidelity
-follow-up.
+image field is height. The shared portrait loader now applies that crop once
+for dialogue, choices and the appearance picker. The cropped texture's bottom
+is aligned to the circle; retaining the discarded rows previously placed the
+visible dialogue artwork 12 logical pixels too high. The circle's position and
+entrance animation are unchanged. Authored regressions check the lower edge in
+both orientations and all themes, mask-before-crop order, and absence of a
+second crop in the picker. The imported New Girl check also covers normalization
+before cropping and save restoration.
+
+The native mask can still leave a narrow strip of the circle's fill beneath
+the character. Local checks of New Girl's Zoe and Sam find a 1–2 logical-pixel
+strip near the bottom center, enlarged along with the window. `00059eb4` ARM
+instructions at `00059fb4`–`00059fc8` confirm that mask division occurs before
+pixel multiplication, so partially masked pixels are fully cleared. Do not
+silently trim that alpha margin or shift the art to cover it. The node centers
+and mask arithmetic are verified from code; a pixel comparison with the running
+original's final OpenGL sampling remains unverified.
 
 Names use the layout's mode-specific name rectangles and the sizing, offsets,
 alignment and default 0.9 scale recovered from `FUN_000a7fa8` / `FUN_000a8544`.
@@ -702,8 +724,8 @@ and the host menu are frontend state and are not included in game saves.
 
 The gear opens a host Resume/Save/Load menu; the original settings/menu flow
 remains unimplemented. Opening it suspends desktop timer ticks, and keyboard
-choice shortcuts do not bypass it. Dialogue retains its previous placement;
-only choices currently apply the recovered 12-row portrait crop.
+choice shortcuts do not bypass it. Dialogue, choices and the appearance picker
+share the recovered 12-row portrait crop and bottom alignment.
 
 Timed choices now use the APK's circular timer and a separate lower panel from
 layout 22, with its ordinary score capsule hidden. Node 10 supplies the clock
