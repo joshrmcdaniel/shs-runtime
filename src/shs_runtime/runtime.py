@@ -675,9 +675,12 @@ class Session:
                 session.pending = engine.dispatch(session.vm, resource_exists=resources.exists)
                 engine.dialogue_animation = None
             if (session.pending and session.pending.name == 'unhandled_yield'
-                    and session.pending.request.yield_id in (7, 33, 39, 63, 70, 76)):
+                    and session.pending.request.yield_id in (4, 7, 33, 39, 63, 70, 76)):
                 # Dispatch only the newly supported call from its validated
                 # frame, without replaying previous input or random draws.
+                if session.pending.request.yield_id == 4:
+                    if len(session.pending.request.args) != 1 or engine.choice_builder is None:
+                        raise SaveError('Choice stop is missing its builder or shuffle argument')
                 if session.pending.request.yield_id in (70, 76) and engine.panel.presentation_mode:
                     # Unsupported stops discarded their animation, but retained
                     # the visible panel. Recover its outgoing portrait identity

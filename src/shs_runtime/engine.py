@@ -555,10 +555,17 @@ class EngineState:
             need(1)
             if self.choice_builder is None:
                 raise VMError('Choice display without a choice builder')
-            if args[0]:
-                return EngineAction('unhandled_yield', request, False,
-                                    dict(reason='Native randomized option order is not implemented'))
             details = deepcopy(self.choice_builder)
+            if args[0]:
+                # 000aeee4: one draw per row from the shared game LCG, with
+                # every partner drawn from the full list (not Fisher-Yates).
+                # Only labels and return mappings move; row flags stay put.
+                count = len(details['options'])
+                for index in range(count):
+                    other = self.random.below(count)
+                    for key in ('options', 'values'):
+                        items = details[key]
+                        items[index], items[other] = items[other], items[index]
             self.choice_builder = None
             return EngineAction('choice', request, False, details)
         if y in (17, 40):

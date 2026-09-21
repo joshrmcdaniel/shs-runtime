@@ -13,7 +13,7 @@ RAND48_MASK = (1 << 48) - 1
 
 @dataclass
 class Random48:
-    """The libc lrand48 stream used by the choice panel (not service 27)."""
+    """The libc lrand48 stream for word choices, separate from services 4/27."""
     state: int = RAND48_INITIAL
 
     def next(self):
